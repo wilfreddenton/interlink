@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "DUET_SELF=bob DUET_URL=https://localhost:9443 DUET_CA=/home/wilfred/Documents/Datasphere/certs/ca.pem /home/wilfred/Documents/Datasphere/target/release/duet-liveness"
+          }
+        ]
+      }
+    ]
+  }
+}

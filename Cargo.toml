@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/duet-bus",
+    "crates/duet-liveness",
+    "crates/duet-mcp",
+    "crates/duet-chat",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/wilfreddenton/duet"
+description = "Let two Claude Code agents converse over a durable, harness-aware message bus"
+
+[workspace.dependencies]
+duet-bus = { path = "crates/duet-bus", version = "0.1.0" }
+duet-mcp = { path = "crates/duet-mcp", version = "0.1.0" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

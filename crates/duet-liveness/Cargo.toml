@@ -1,0 +1,19 @@
+[package]
+name = "duet-liveness"
+description = "Claude Code Stop hook that keeps a background event-listener armed across turns"
+keywords = ["claude-code", "hook", "agents", "ai", "liveness"]
+categories = ["command-line-utilities"]
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "duet-liveness"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+rustls.workspace = true
+clap.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls-no-provider", "blocking"] }

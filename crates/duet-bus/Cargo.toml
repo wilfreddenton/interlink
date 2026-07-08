@@ -1,0 +1,38 @@
+[package]
+name = "duet-bus"
+description = "Async per-recipient long-poll message queue for bridging local agents"
+keywords = ["mcp", "agents", "message-queue", "ai", "long-poll"]
+categories = ["asynchronous", "network-programming"]
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "duet_bus"
+path = "src/lib.rs"
+
+[[bin]]
+name = "duet-bus"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+axum = "0.8"
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
+tower-service = "0.3"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+rcgen = "0.14"
+dashmap = "6"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

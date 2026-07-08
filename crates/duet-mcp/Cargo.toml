@@ -1,0 +1,16 @@
+[package]
+name = "duet-mcp"
+description = "Helpers for building an rmcp stdio MCP server that proxies to a duet-bus backend"
+keywords = ["mcp", "rmcp", "agents", "ai", "rustls"]
+categories = ["asynchronous", "api-bindings"]
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
