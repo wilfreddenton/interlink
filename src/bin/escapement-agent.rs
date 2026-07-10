@@ -9,14 +9,14 @@
 //! A `*` peer's message is pushed inline. A scoped peer's body is withheld
 //! pending the subagent enforcement layer; only a metadata notice is pushed.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use escapement::agent::{Dedupe, Dispatch, decide};
+use escapement::agent::{Dedupe, Dispatch, HeldRequest, Quarantine, decide};
 use escapement::identity::{AgentKey, SignedMessage};
 use escapement::policy::Policy;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -33,6 +33,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 const DEDUPE_CAP: usize = 4096;
+const QUARANTINE_CAP: usize = 256;
 
 #[derive(Parser)]
 #[command(about = "Per-agent channel server for Claude Code")]
@@ -48,13 +49,6 @@ struct Args {
     url: String,
 }
 
-/// A scoped request whose untrusted body is held back from the main context
-/// until a capability subagent fetches it.
-struct Quarantined {
-    from: String,
-    text: String,
-}
-
 /// Shared between the MCP handler (outbound) and the long-poll loop (inbound).
 struct Inner {
     key: AgentKey,
@@ -63,7 +57,7 @@ struct Inner {
     http: reqwest::Client,
     dedupe: Mutex<Dedupe>,
     /// Withheld scoped bodies, keyed by msg_id. Drained one-shot by fetch_request.
-    quarantine: Mutex<HashMap<String, Quarantined>>,
+    quarantine: Mutex<Quarantine>,
 }
 
 impl Inner {
@@ -136,8 +130,8 @@ impl Agent {
         &self,
         Parameters(args): Parameters<FetchArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // One-shot: remove on fetch, so a body can't be re-read after handling.
-        let held = self.inner.quarantine.lock().await.remove(&args.msg_id);
+        // One-shot: take() removes it, so a body can't be re-read after handling.
+        let held = self.inner.quarantine.lock().await.take(&args.msg_id);
         match held {
             Some(q) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "request from {}: {}",
@@ -251,9 +245,9 @@ async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleSer
                 // Withhold the untrusted body; hand the main agent only metadata
                 // and the capability to spawn. The body reaches a subagent only.
                 tracing::info!(sender = %petname, capability = %capability, msg_id = %msg.msg_id, "scoped request quarantined");
-                inner.quarantine.lock().await.insert(
+                inner.quarantine.lock().await.hold(
                     msg.msg_id.clone(),
-                    Quarantined {
+                    HeldRequest {
                         from: petname.clone(),
                         text: msg.text.clone(),
                     },
@@ -324,7 +318,7 @@ async fn main() -> Result<()> {
         url: args.url,
         http: reqwest::Client::new(),
         dedupe: Mutex::new(Dedupe::new(DEDUPE_CAP)),
-        quarantine: Mutex::new(HashMap::new()),
+        quarantine: Mutex::new(Quarantine::new(QUARANTINE_CAP)),
     });
 
     let agent = Agent {

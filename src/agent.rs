@@ -84,6 +84,64 @@ pub fn decide(
     })
 }
 
+/// A scoped request whose untrusted body is held back from the main context
+/// until a capability subagent fetches it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldRequest {
+    /// The authenticated sender's petname.
+    pub from: String,
+    /// The untrusted request body. Only ever handed to a capability subagent.
+    pub text: String,
+}
+
+/// Withheld scoped bodies, keyed by `msg_id`. Bounded (drop-oldest) so a scoped
+/// peer can't grow it without limit by never having its requests fetched.
+pub struct Quarantine {
+    order: VecDeque<String>,
+    held: std::collections::HashMap<String, HeldRequest>,
+    cap: usize,
+}
+
+impl Quarantine {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            order: VecDeque::new(),
+            held: std::collections::HashMap::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    /// Hold a body under `msg_id`. Evicts the oldest if at capacity.
+    pub fn hold(&mut self, msg_id: String, req: HeldRequest) {
+        if self.held.contains_key(&msg_id) {
+            return; // dedupe upstream should prevent this; ignore duplicates
+        }
+        if self.order.len() >= self.cap
+            && let Some(old) = self.order.pop_front()
+        {
+            self.held.remove(&old);
+        }
+        self.order.push_back(msg_id.clone());
+        self.held.insert(msg_id, req);
+    }
+
+    /// Take the body for `msg_id` — **one-shot**: a body can't be re-read after
+    /// it's handled. `None` if unknown or already taken.
+    pub fn take(&mut self, msg_id: &str) -> Option<HeldRequest> {
+        let req = self.held.remove(msg_id)?;
+        self.order.retain(|id| id != msg_id);
+        Some(req)
+    }
+
+    pub fn len(&self) -> usize {
+        self.held.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
+    }
+}
+
 /// A bounded set of recently-seen `msg_id`s. Bounded because we only need to
 /// reject replays inside the freshness window; anything older is already
 /// rejected by [`check_freshness`], so unbounded memory would be pointless.
@@ -240,5 +298,53 @@ mod tests {
         assert!(d.insert("c")); // evicts "a"
         assert!(d.insert("a"), "a was evicted, so it is fresh again");
         assert!(!d.insert("c"), "c is still within the window");
+    }
+
+    fn held(text: &str) -> HeldRequest {
+        HeldRequest {
+            from: "alice".into(),
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn quarantine_take_is_one_shot() {
+        let mut q = Quarantine::new(8);
+        q.hold("m1".into(), held("do the thing"));
+        assert_eq!(q.take("m1"), Some(held("do the thing")));
+        // Second fetch must fail — a body cannot be re-read after handling.
+        assert_eq!(q.take("m1"), None);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn quarantine_take_of_unknown_is_none() {
+        let mut q = Quarantine::new(8);
+        assert_eq!(q.take("nope"), None);
+    }
+
+    #[test]
+    fn quarantine_is_bounded_drop_oldest() {
+        let mut q = Quarantine::new(2);
+        q.hold("m1".into(), held("one"));
+        q.hold("m2".into(), held("two"));
+        q.hold("m3".into(), held("three")); // evicts m1
+        assert_eq!(q.len(), 2);
+        assert_eq!(q.take("m1"), None, "oldest was evicted");
+        assert_eq!(q.take("m2"), Some(held("two")));
+        assert_eq!(q.take("m3"), Some(held("three")));
+    }
+
+    #[test]
+    fn quarantine_take_keeps_order_intact_for_eviction() {
+        // Taking a middle entry must not leave a stale id that later evicts the
+        // wrong thing.
+        let mut q = Quarantine::new(2);
+        q.hold("m1".into(), held("one"));
+        q.hold("m2".into(), held("two"));
+        assert_eq!(q.take("m1"), Some(held("one")));
+        q.hold("m3".into(), held("three")); // m2, m3 fit; nothing wrongly evicted
+        assert_eq!(q.take("m2"), Some(held("two")));
+        assert_eq!(q.take("m3"), Some(held("three")));
     }
 }

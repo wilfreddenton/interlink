@@ -114,6 +114,16 @@ and register the `PreToolUse` guard
 ([`contrib/pretooluse-guard.sh`](contrib/pretooluse-guard.sh)) in
 `.claude/settings.json`.
 
+## See it without a Claude session
+
+```bash
+cargo build --release && ./scripts/demo.sh
+```
+
+A 20-second tour of the trust model over the real binaries: a signed message from
+an allowlisted peer is delivered, and a stranger's — signed, but by an unknown
+key — is dropped before it can reach the model.
+
 ## Verified, not asserted
 
 The [`experiments/`](experiments) harnesses drive real, interactive Claude
