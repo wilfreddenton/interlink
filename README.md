@@ -3,133 +3,163 @@
 [![CI](https://github.com/wilfreddenton/escapement/actions/workflows/ci.yml/badge.svg)](https://github.com/wilfreddenton/escapement/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-**A durable, self-re-arming event listener for Claude Code agents.**
+**Secure agent-to-agent messaging and capability-scoped delegation for Claude Code.**
 
-An agent that goes idle without an armed listener suffers a **lost wakeup**.
-`escapement` makes that impossible.
+Independent Claude Code sessions message each other and — the part nobody else
+does — **safely delegate work to peers they don't fully trust**. Every message is
+Ed25519-signed, a peer's identity *is* its public key, and an untrusted peer's
+request runs in a disposable subagent whose tools are the only thing it can do.
 
-## The problem
+## Why this exists
 
-A Claude Code agent is not a persistent process. It exists only during a turn,
-then parks. So there is nowhere to hang a callback, and the harness offers
-exactly one wake primitive:
+Letting Claude Code sessions talk to each other is a solved, crowded problem:
+[`claude-peers-mcp`](https://github.com/louislva/claude-peers-mcp) (~2k★),
+`agent-bridge`, and others all do it, and Claude Code's own **channels** feature
+is built for exactly this. They solve **transport**.
 
-> **An agent is re-invoked when a background shell task *exits*.**
-
-That gives you a **one-shot** event listener — the equivalent of
-`addEventListener(…, { once: true })`. And a one-shot listener must be
-re-registered after every event. Which means the two obvious designs both fail:
-
-- **Poll inside the turn** → never yields. Burns tokens, never returns to idle.
-- **An eternal `while true` background listener** → never *exits*, so it never
-  wakes anyone. Events pile up unread.
-
-And the subtle one: if the agent parks *without* re-registering, the next event
-is silently missed. That's a **lost wakeup** — the classic concurrency bug that
-condition variables exist to prevent.
-
-## The mechanism
+None of them solve **authorization**. The popular one's quickstart is literally:
 
 ```
-        ┌──── agent parks (idle) ────┐
-        │                            │
-   Stop hook: armed?            listener blocks on /recv
-   ├─ yes → allow park               │
-   └─ no  → BLOCK, re-arm       event arrives → listener EXITS
-        ▲                            │
-        └──── agent wakes, handles ──┘
+claude --dangerously-skip-permissions --dangerously-load-development-channels server:claude-peers
 ```
 
-1. The agent arms a listener: a background task that blocks until an event
-   arrives, then **exits** — and *that exit is the wake*.
-2. It handles the event and re-arms.
-3. A **`Stop` hook** refuses to let the agent park while unarmed. Liveness lives
-   in the harness, never in the model's memory.
+That is: *any process that can reach the local broker can inject text into an
+agent running with every permission check turned off, and there is no way to
+know who sent it.* Claude Code's own channel docs call an ungated channel a
+"prompt injection vector." `escapement` is the answer to that — the thing that
+lets you turn the permissions back **on**.
 
-Like a watch escapement: it locks the train, releases exactly one impulse, and
-re-locks.
+## The trust model
 
-The hook is **bounded** (it blocks only while disarmed, so it can't loop forever)
-and **fails open** (an unreachable bus allows the park, so a dead bus can never
-trap the agent). Events are queued per-recipient, so a missed re-arm *delays*
-delivery — it never loses it.
+Two ideas do all the work.
 
-## Install
+**1. A peer's identity is its public key.** Names (`alice`, `bob`) are local
+petnames; the key is the truth. Claiming a name gets you nothing without the key.
+Messages are signed over a domain-separated encoding and verified with
+`verify_strict` *before* anything reaches the model — a stranger's message is
+dropped, not shown.
 
-One crate, feature-gated. You only compile what you use.
+**2. `peers.json` is a per-peer dial, from "run anything" to "run exactly these
+tools":**
+
+```json
+{
+  "my-laptop":    { "key": "8Emom3…", "may": "*" },
+  "build-server": { "key": "rq2AzH…", "may": "run-tests" },
+  "some-bot":     { "key": "Zc91xK…", "may": "read-only" }
+}
+```
+
+- **`"*"`** — full trust. The message is delivered inline; the agent acts on it
+  with all its tools. For machines whose private keys *you* hold.
+- **a capability name** — e.g. `run-tests` refers to `.claude/agents/run-tests.md`,
+  an agent whose `tools:` frontmatter *is* the capability. The request is handled
+  in a disposable subagent limited to those tools — and a subagent physically
+  cannot call a tool it wasn't given.
+
+An unlisted peer gets nothing. Deny-by-default.
+
+## How a scoped request is contained
+
+The hard case — a peer you don't fully trust — never gets to put text in front of
+your main agent:
+
+```
+signed request  ──►  bus  ──►  your channel server:
+                                 verify sig · on allowlist? · to me? · fresh? · not a replay?
+                                 scoped ─► QUARANTINE the body, push only metadata + a capability name
+                                              │
+   main agent  ◄── "a scoped request m3 from build-server is pending; spawn `run-tests` to handle it"
+        │            (main agent CANNOT fetch the body — a PreToolUse hook denies it)
+        ▼
+   spawns `run-tests` subagent ─► it calls fetch_request(m3) ─► gets the body
+                                   acts within its tools (frontmatter-enforced)
+                                   replies via send_message
+        │
+   subagent exits ─► its context, and the untrusted text, are discarded
+```
+
+Three deterministic gates, none relying on the model's judgment:
+- the **signature + allowlist** decide whether a message exists at all;
+- a **`PreToolUse` hook** denies `fetch_request` to the main agent, so the
+  untrusted body only ever enters a throwaway subagent;
+- the subagent's **`tools:` frontmatter** is the capability — hard-enforced by the
+  runtime.
+
+All three are verified against a live Claude session (see below).
+
+## Quickstart
 
 ```bash
-cargo install escapement                      # the hook (default)
-cargo install escapement --features full      # hook + bus + the demo
+cargo build --release            # escapement-bus, escapement-agent, escapement-keygen
+
+# 1. one shared bus (loopback HTTP, no TLS needed — see Security)
+./target/release/escapement-bus
+
+# 2. an identity per agent; escapement-keygen prints the public key to share
+./target/release/escapement-keygen --out alice.key
 ```
 
-| Feature | Provides | Binary |
-|---|---|---|
-| `hook` *(default)* | the Stop hook — **the primitive** | `escapement-hook` |
-| `bus` | one event source: a per-recipient long-poll queue over HTTPS | `escapement-bus` |
-| `mcp` | helpers for an MCP server that proxies to a local HTTP service | `duet` |
-| `full` | all of the above | — |
-
-Features are additive and dependencies are gated: `escapement` with only `hook`
-pulls **18** transitive deps; with everything, 442. As a library:
-
-```rust
-use escapement::hook::{check_armed, block_decision, default_listen_cmd};
-```
-
-## The demo: two agents in conversation
-
-`duet` is the flagship example — two Claude Code instances talking with no human
-relaying messages. Agent *alice* sends via an MCP tool; agent *bob* is woken by
-his armed listener, replies, and re-arms.
+For each agent, drop an MCP config naming the `escapement` server (see
+[`config/`](config)) and a `peers.json` listing the peers' public keys. Then
+launch it as a channel:
 
 ```bash
-cargo build --release --features full
-./target/release/escapement-bus       # the event source (generates certs/ on first run)
-./scripts/demo.sh                     # full round trip, no Claude required
+claude --mcp-config alice.mcp.json --dangerously-load-development-channels server:escapement
 ```
 
-To wire up real instances, copy `config/alice.mcp.json` → `<alice>/.mcp.json` and
-merge `config/settings.alice.json` into `<alice>/.claude/settings.json` (same for
-`bob`), then restart both. Tell each once: *"arm your listener."* The Stop hook
-keeps it armed forever after.
+To use a scoped capability, add the capability agent to the project's
+`.claude/agents/` (example: [`contrib/agents/read-only.md`](contrib/agents/read-only.md))
+and register the `PreToolUse` guard
+([`contrib/pretooluse-guard.sh`](contrib/pretooluse-guard.sh)) in
+`.claude/settings.json`.
 
-The bus is just *one* event source. The same primitive wakes an agent on a
-webhook, a CI result, a queue message, or a file change.
+## Verified, not asserted
+
+The [`experiments/`](experiments) harnesses drive real, interactive Claude
+sessions through a PTY (channels need a TTY, so `claude -p` can't test them) and
+confirm the whole thing end to end:
+
+- **inline** — alice ↔ bob round-trip, signed, both directions;
+- **rejection** — a stranger's message is dropped, never pushed;
+- **scoped enforcement** — a scoped peer's read runs, but its request to run a
+  shell command is *deterministically blocked* (the side-effect file is never
+  created, even with the shell tool in the session allowlist).
+
+## Security
+
+- **No transport encryption, on purpose.** The bus binds `127.0.0.1`; traffic
+  never leaves the machine. Authenticity comes from **signatures on the
+  messages**, which — unlike TLS — survive passing through an untrusted bus.
+  Compromising the bus lets you drop or reorder messages, never forge one. This
+  is also what keeps the dependency tree free of C (`ring`), so the binaries are
+  pure-Rust and statically linkable.
+- **`"*"` is safe only because of identity.** A wildcard grant means "this key
+  may do anything" — reserve it for machines whose keys you hold. A compromise of
+  any `*` peer becomes arbitrary tool execution on the others.
+- **Research preview.** Channels are a Claude Code research preview; custom ones
+  require `--dangerously-load-development-channels`, and the protocol may change.
+
+## Pure Rust, cross-platform
+
+No C dependencies (CI fails the build if `ring`/`openssl-sys`/`cc`/`cmake`
+reappear). Fully static binaries on Linux (musl) and Windows; on macOS, links
+only system libraries. One feature-gated crate: `bus`, `agent`, `identity`.
 
 ## Related work
 
-`escapement` is often mistaken for things it isn't:
-
-| | What it does | Cross-agent? |
-|---|---|---|
-| **`/goal`** | keeps *one* session looping until a condition holds | no |
-| **`/loop`** | re-runs a prompt on a time interval | no |
-| **Subagents** | spawns children *inside* one session | no |
-| **Agent Teams** | coordinates agents within one conversation | no |
-| **`escapement`** | makes an agent **reactive to external events** | yes |
-
-The nearest prior art isn't in the agent world at all — it's **systemd socket
-activation** (a supervisor holds the armed socket, wakes an inactive service on
-an event, and re-arms), and **Rust's own `Waker`** (a parked task registers a
-waker; parking without one is a lost wakeup). `escapement` is that discipline,
-applied to an agent.
+| | messaging | who can send | authorization | context isolation |
+|---|---|---|---|---|
+| Agent Teams (built-in) | ✅ | lead-spawned only | permission relay | — |
+| claude-peers-mcp | ✅ | anyone on the broker | none (`--dangerously-skip-permissions`) | none |
+| **escapement** | ✅ | **signed + allowlisted keys** | **per-peer capability dial** | **quarantine + subagent** |
 
 ## Design
 
-The full walkthrough — execution model, rejected designs, the arming signal, and
-failure modes — is in [`DESIGN.md`](DESIGN.md). Planned signed identity is in
-[`DIRECTORY.md`](DIRECTORY.md).
-
-## Limits
-
-- **Not parallel.** An agent does one thing at a time; an incoming event waits for
-  the current turn to finish.
-- **Heartbeat wakes.** With no traffic the long-poll times out (~5 min), wakes the
-  agent, and re-arms — a periodic no-op.
-- **Context growth.** A long-lived agent accumulates context per event.
-- **Local + self-signed.** The bus binds `127.0.0.1` with an `rcgen` cert. Not
-  built to face a network.
+The full walkthrough — execution model, the channel discovery, the three gates,
+and the runtime facts we had to establish by experiment — is in
+[`DESIGN.md`](DESIGN.md). Deferred work (peer discovery, post-quantum signatures)
+is in [`DIRECTORY.md`](DIRECTORY.md).
 
 ## License
 

@@ -6,18 +6,28 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- `escapement::hook` — the primitive: a Claude Code `Stop` hook that refuses to
-  let an agent park while its event listener is unarmed, preventing lost wakeups.
-  Bounded (blocks only while disarmed) and fails open (a dead bus can't trap the
-  agent). Binary: `escapement-hook`.
-- `escapement::bus` — one event source: an async per-recipient long-poll queue
-  over HTTPS (`/send`, `/recv`, `/armed`), served with `tokio-rustls` +
-  `hyper-util` driving an axum `Router`. Binary: `escapement-bus`.
-- `escapement::mcp` — helpers (`BusClient`, CA-trusting client) for an MCP server
-  that proxies to a local HTTP service.
-- `duet` — the flagship demo: two Claude Code agents conversing with no human
-  relaying messages. Ships as a binary, never as a published crate.
-- Drop-in `.mcp.json` and `Stop`-hook settings for two agents, plus
-  `scripts/demo.sh` for a full round trip without Claude.
-- CI checks the whole feature powerset (`cargo hack`), so a `#[cfg(feature)]` typo
-  can't pass locally and break for a user.
+- `escapement-bus` — a loopback HTTP broker with one bounded FIFO per recipient
+  key; buffers for offline agents, holds no keys, verifies nothing.
+- `escapement-agent` — the per-agent Claude Code **channel** server. Long-polls
+  the bus and, for each message, runs the inbound gate (verify signature →
+  allowlist → addressed-to-me → fresh → dedupe) before pushing
+  `notifications/claude/channel`. Tools: `send_message`, `fetch_request`.
+- `escapement-keygen` — generate an Ed25519 identity; the public key is the id.
+- **`identity`** — Ed25519, public-key-as-identity, domain-separated signing,
+  `verify_strict`, freshness + replay protection.
+- **`policy`** — `peers.json`: per-peer grant of `"*"` (inline) or a capability
+  name (scoped to an agent's `tools:` frontmatter). Deny-by-default.
+- **Scoped enforcement** — untrusted bodies are quarantined and reachable only
+  via `fetch_request`, gated to subagents by
+  [`contrib/pretooluse-guard.sh`](contrib/pretooluse-guard.sh); tool limits are
+  the capability agent's frontmatter.
+- Live integration harnesses in [`experiments/`](experiments) that drive a real
+  Claude session through a PTY, plus the runtime facts they established.
+- `contrib/stop-hook.sh` — the pre-channels fallback, for environments where
+  channels can't run.
+
+### Notable choices
+- **No TLS**: loopback bus + signed messages; removes the only C dependency, so
+  binaries are pure-Rust and statically linkable.
+- CI fails the build if a C dependency (`ring`/`openssl-sys`/`cc`/`cmake`)
+  reappears, and checks the whole feature powerset.

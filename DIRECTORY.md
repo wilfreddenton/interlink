@@ -1,12 +1,14 @@
 # Identity & directory — design
 
-> Status: **design draft, no code yet.**
+> Status: **identity is BUILT** (`src/identity.rs`, `src/policy.rs`); this doc is
+> now the record of the design and of the deferred work.
 >
-> **v1 scope (what we build now): verifiable identity with pre-shared keys.**
-> Each agent has an Ed25519 keypair; the initiator already knows the peer's id
-> and public key (shared out-of-band). Messages are signed and verified. No
-> discovery, registry, presence-directory, or semantic matching yet — those are
-> [Future work](#future-work-deferred) (researched, deliberately deferred).
+> Signed identity with pre-shared keys — each agent has an Ed25519 keypair and
+> knows peers' public keys via `peers.json` — shipped. What remains deferred, and
+> deliberately so, is **peer discovery** (a registry so you don't have to know the
+> key in advance), **semantic capability matching**, and **post-quantum
+> signatures**. Those are in [Future work](#future-work-deferred), researched and
+> parked. The sections below describe the design as built and the reasoning.
 
 ## 1. Goals (v1)
 
