@@ -6,10 +6,12 @@
 //! choice is also what keeps `ring` (and all C) out of the dependency tree.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
 use praetor::bus::Broker;
+use praetor::store::Store;
 use tokio::net::TcpListener;
 
 #[derive(Parser)]
@@ -18,6 +20,10 @@ struct Args {
     /// Address to listen on. Loopback unless you really mean otherwise.
     #[arg(long, env = "PRAETOR_ADDR", default_value = "127.0.0.1:9440")]
     addr: SocketAddr,
+    /// Durable queue file. Omit for an in-memory bus (queues lost on restart).
+    /// With a path, messages survive a restart until the recipient acks them.
+    #[arg(long, env = "PRAETOR_DB")]
+    db: Option<PathBuf>,
     /// Per-recipient queue cap. When full, the oldest message is dropped.
     #[arg(long, env = "PRAETOR_QUEUE_CAP", default_value_t = 1024)]
     queue_cap: usize,
@@ -44,7 +50,18 @@ async fn main() -> Result<()> {
         );
     }
 
-    let app = Broker::new(args.queue_cap).router();
+    let store = match &args.db {
+        Some(path) => {
+            tracing::info!(db = %path.display(), "durable queue");
+            Store::on_disk(path)?
+        }
+        None => {
+            tracing::warn!("no --db: in-memory queue, lost on restart");
+            Store::in_memory()?
+        }
+    };
+
+    let app = Broker::new(store, args.queue_cap).router();
     let listener = TcpListener::bind(args.addr).await?;
     tracing::info!(addr = %args.addr, cap = args.queue_cap, "bus listening");
     axum::serve(listener, app).await?;

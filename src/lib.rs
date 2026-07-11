@@ -35,6 +35,9 @@ pub mod identity;
 #[cfg(feature = "agent")]
 pub mod policy;
 
+#[cfg(feature = "persist")]
+pub mod store;
+
 /// Unix milliseconds.
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()

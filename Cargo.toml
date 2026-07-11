@@ -16,10 +16,12 @@ readme = "README.md"
 
 [features]
 default = ["bus", "agent"]
-bus = ["dep:axum", "dep:hyper", "dep:hyper-util", "dep:tower-service", "dep:dashmap", "dep:tokio", "dep:tracing", "dep:tracing-subscriber", "dep:clap"]
+bus = ["persist", "dep:axum", "dep:hyper", "dep:hyper-util", "dep:tower-service", "dep:dashmap", "dep:tokio", "dep:tracing", "dep:tracing-subscriber", "dep:clap"]
 identity = ["dep:ed25519-dalek", "dep:getrandom", "dep:base64", "dep:clap"]
 # the per-agent channel server (MCP over stdio, pushes into a live session)
-agent = ["identity", "dep:rmcp", "dep:schemars", "dep:reqwest", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
+agent = ["identity", "persist", "dep:rmcp", "dep:schemars", "dep:reqwest", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
+# durable, keep-until-acked queue (redb, pure Rust); shared by bus and agent
+persist = ["dep:redb", "dep:tokio", "dep:tracing"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +45,9 @@ ed25519-dalek = { version = "3", optional = true }
 getrandom = { version = "0.3", optional = true }
 base64 = { version = "0.22", optional = true }
 
+# pure-Rust embedded ACID store for the durable queue
+redb = { version = "4", optional = true }
+
 # no TLS features: the agent talks plain HTTP to a loopback bus
 reqwest = { version = "0.13", default-features = false, features = ["json", "query"], optional = true }
 rmcp = { version = "2", features = ["server", "transport-io", "macros"], optional = true }
@@ -50,6 +55,7 @@ schemars = { version = "1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
 
 [[bin]]
 name = "praetor-bus"

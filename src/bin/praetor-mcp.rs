@@ -239,13 +239,21 @@ async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleSer
         if value.get("status").and_then(|s| s.as_str()) != Some("message") {
             continue; // timeout tick; poll again
         }
+        // The bus keeps this message until we ack it, so a crash before delivery
+        // redelivers it (and the dedupe set collapses the duplicate).
+        let ack = value
+            .get("ack")
+            .and_then(|a| a.as_str())
+            .map(str::to_string);
         let Some(payload) = value.get("envelope").and_then(|e| e.get("payload")) else {
+            ack_message(&inner.http, &url, &me_b64, ack.as_deref()).await;
             continue;
         };
         let msg: SignedMessage = match serde_json::from_value(payload.clone()) {
             Ok(m) => m,
             Err(e) => {
                 tracing::warn!("undecodable payload dropped: {e}");
+                ack_message(&inner.http, &url, &me_b64, ack.as_deref()).await;
                 continue;
             }
         };
@@ -285,6 +293,25 @@ async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleSer
                 tracing::warn!(?reason, from = %msg.from, "message rejected");
             }
         }
+        // Handled (delivered or deliberately rejected) — ack so the bus releases
+        // it. Rejected garbage is acked too, so it can't redeliver forever.
+        ack_message(&inner.http, &url, &me_b64, ack.as_deref()).await;
+    }
+}
+
+/// POST an ack so the bus can drop a handled message. Best-effort: a failed ack
+/// just means the message redelivers and is deduped.
+async fn ack_message(http: &reqwest::Client, url: &str, me: &str, ack: Option<&str>) {
+    let Some(ack) = ack else { return };
+    if let Err(e) = http
+        .post(format!("{url}/ack"))
+        .json(&json!({ "me": me, "ack": ack }))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+    {
+        tracing::warn!(%url, "ack failed (message may redeliver): {e}");
     }
 }
 
