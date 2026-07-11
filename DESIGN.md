@@ -73,8 +73,20 @@ payload is untrusted text; receive is a channel because nothing else pushes.
 A dumb broker: one bounded FIFO per recipient key, plain HTTP on loopback. It
 routes an opaque payload and buffers for offline recipients; it never verifies a
 signature and holds no keys. Bounded because a peer that never returns would
-otherwise grow its queue without limit — drop-oldest, logged. Pop-on-read (no
-lease/ack): the only crash window is a session already being torn down.
+otherwise grow its queue without limit — drop-oldest, logged.
+
+**Keep-until-ack, durable.** A message stays in the queue until the recipient
+acks it, and the queue lives in a pure-Rust ACID store ([redb](https://crates.io/crates/redb)),
+so a bus restart (a laptop that sleeps or reboots) loses nothing queued for an
+offline agent. Delivery is therefore at-least-once — a crash between delivery and
+ack redelivers — which is safe because the receiver already dedupes by `msg_id`.
+The same store, in a **separate file** on the agent side, backs a durable
+*outbox*: a `send_message` issued while the bus is unreachable is held and
+retried by a background sender until accepted, so neither a bus nor an agent
+restart drops a message. redb is the single seam — one synchronous API wrapped in
+`spawn_blocking` — chosen over SQLite (C) and Turso (whose SDK still pulls C via
+`bindgen`, and which had an open silent-data-loss bug). An in-memory backend
+gives the same code path when no db file is configured.
 
 ## No TLS, on purpose
 
@@ -87,8 +99,8 @@ Authenticity moved from the transport (where it was C-shaped) to the message
 
 ## Crate shape
 
-One crate, feature-gated (`bus` / `agent` / `identity`); optional dependencies
-mean the identity-only build pulls a fraction of the tree. Binaries use
+One crate, feature-gated (`bus` / `agent` / `identity` / `persist`); optional
+dependencies mean the identity-only build pulls a fraction of the tree. Binaries use
 `required-features`. CI runs `cargo hack --feature-powerset` so a `#[cfg]` typo
 can't pass locally and break a user, and asserts no C dependency reappears.
 

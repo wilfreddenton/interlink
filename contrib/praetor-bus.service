@@ -25,7 +25,11 @@ Wants=network-online.target
 # the most sleep/wake-resilient (doesn't depend on a specific interface being up
 # at start) but is only safe on a host with no public inbound — a laptop behind
 # NAT / on a tailnet.
-ExecStart=%h/.cargo/bin/praetor-bus --addr 127.0.0.1:9440
+# StateDirectory creates %S/praetor (~/.local/state/praetor) if absent.
+StateDirectory=praetor
+# --db makes queues durable: messages for an offline agent survive a bus
+# restart until acked. Drop it for an in-memory bus (backlog lost on restart).
+ExecStart=%h/.cargo/bin/praetor-bus --addr 127.0.0.1:9440 --db %S/praetor/bus.redb
 Restart=always
 RestartSec=2
 

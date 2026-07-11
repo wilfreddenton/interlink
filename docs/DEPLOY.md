@@ -46,12 +46,19 @@ In each agent's `.mcp.json`, set `PRAETOR_URL` to the bus's MagicDNS name:
 { "mcpServers": { "praetor": {
   "command": "/path/to/praetor-mcp",
   "env": {
-    "PRAETOR_KEY":   "/path/to/alice.key",
-    "PRAETOR_PEERS": "/path/to/alice-peers.json",
-    "PRAETOR_URL":   "http://busbox.your-tailnet.ts.net:9440"
+    "PRAETOR_KEY":      "/path/to/alice.key",
+    "PRAETOR_PEERS":    "/path/to/alice-peers.json",
+    "PRAETOR_URL":      "http://busbox.your-tailnet.ts.net:9440",
+    "PRAETOR_AGENT_DB": "/path/to/alice-agent.redb"
   }
 } } }
 ```
+
+`PRAETOR_AGENT_DB` is this agent's own store (a **separate** file from the bus's).
+It holds the durable outbound queue — a `send_message` issued while the bus is
+unreachable is saved and delivered automatically once it returns — and the local
+conversation log queried by `message_status`, `conversation_history`, and
+`list_pending`. Omit it and those become in-memory (lost on restart).
 
 Then launch each session as a channel:
 
@@ -80,12 +87,15 @@ If the bus runs on a laptop that sleeps or shuts down, nothing needs babysitting
   `Restart=always` also brings it back if it ever dies. On *sleep/wake* the
   process is only frozen and thaws by itself — systemd isn't involved.
 
-Two honest caveats:
+- **Queues are durable** (with a db file on each side). Give the bus `--db`
+  (`PRAETOR_DB`) and each agent `PRAETOR_AGENT_DB`, and a restart of either loses
+  nothing: the bus holds a message until the recipient acks it, and an agent holds
+  an unsent message until the bus accepts it. Delivery is at-least-once; the
+  receiver dedupes by `msg_id`, so a redelivered message is harmless. Without a db
+  file the corresponding side is in-memory and drops its backlog on restart.
 
-- **Queues are in-memory.** A bus *restart* (shutdown/reboot/crash) drops anything
-  that was queued for offline agents. Live conversations just reconnect and carry
-  on; only undelivered backlog is lost. (Persistence is deferred — see
-  [`DIRECTORY.md`](../DIRECTORY.md).)
+One honest caveat:
+
 - **Claude Code sessions aren't daemons.** After a full shutdown you relaunch your
   sessions yourself; when you do, `praetor-mcp` reconnects to the bus
   automatically. Only the bus auto-starts.

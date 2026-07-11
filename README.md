@@ -136,7 +136,17 @@ confirm the whole thing end to end:
 - **rejection** — a stranger's message is dropped, never pushed;
 - **scoped enforcement** — a scoped peer's read runs, but its request to run a
   shell command is *deterministically blocked* (the side-effect file is never
-  created, even with the shell tool in the session allowlist).
+  created, even with the shell tool in the session allowlist);
+- **durable delivery** — a message sent while the bus is down is queued and
+  delivered once it returns, surviving a restart of *either* side (verified by
+  killing and relaunching the bus and the agent between send and delivery).
+
+Messages are held on **both** sides until acked — the bus keeps a message for an
+offline recipient, and each agent keeps an unsent message in a durable outbox —
+over a pure-Rust ACID store ([redb](https://crates.io/crates/redb)). Delivery is
+at-least-once, made safe by `msg_id` dedupe. The `message_status`,
+`conversation_history`, and `list_pending` tools expose the local log; an
+untrusted peer's body is logged as metadata only, never written to disk.
 
 ## Security
 
@@ -156,7 +166,8 @@ confirm the whole thing end to end:
 
 No C dependencies (CI fails the build if `ring`/`openssl-sys`/`cc`/`cmake`
 reappear). Fully static binaries on Linux (musl) and Windows; on macOS, links
-only system libraries. One feature-gated crate: `bus`, `agent`, `identity`.
+only system libraries. One feature-gated crate: `bus`, `agent`, `identity`,
+`persist`.
 
 ## Related work
 

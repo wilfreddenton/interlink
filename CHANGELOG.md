@@ -11,7 +11,8 @@ All notable changes to this project are documented here. The format is based on
 - `praetor-mcp` — the per-agent Claude Code **channel** server. Long-polls
   the bus and, for each message, runs the inbound gate (verify signature →
   allowlist → addressed-to-me → fresh → dedupe) before pushing
-  `notifications/claude/channel`. Tools: `send_message`, `fetch_request`.
+  `notifications/claude/channel`. Tools: `send_message`, `fetch_request`,
+  `message_status`, `conversation_history`, `list_pending`.
 - `praetor-keygen` — generate an Ed25519 identity; the public key is the id.
 - **`identity`** — Ed25519, public-key-as-identity, domain-separated signing,
   `verify_strict`, freshness + replay protection.
@@ -30,6 +31,16 @@ All notable changes to this project are documented here. The format is based on
   (retry-forever long-poll, no socket reuse across wake) and never crashes when
   the bus is absent. A systemd user service (`contrib/praetor-bus.service`)
   auto-starts the bus on boot.
+- **`persist`** — a durable, keep-until-acked FIFO queue over
+  [redb](https://crates.io/crates/redb) (pure Rust, ACID; no C). Shared by both
+  sides: the **bus** (`--db`/`PRAETOR_DB`) holds a message for an offline
+  recipient until it acks, and each **agent** (`PRAETOR_AGENT_DB`) holds an
+  unsent message in a durable outbox until the bus accepts it — so a restart of
+  either loses nothing. Delivery is at-least-once, made safe by the existing
+  `msg_id` dedupe. The agent's store also keeps a local conversation log,
+  queried by the `message_status` / `conversation_history` / `list_pending`
+  tools; scoped/untrusted peers' bodies are recorded as metadata only and never
+  written to disk.
 
 ### Notable choices
 - **No TLS**: loopback bus + signed messages; removes the only C dependency, so
