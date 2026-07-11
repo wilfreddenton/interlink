@@ -5,6 +5,8 @@
 
 **Secure agent-to-agent messaging and capability-scoped delegation for Claude Code.**
 
+![the trust model, over the real binaries](docs/demo.gif)
+
 Independent Claude Code sessions message each other and — the part nobody else
 does — **safely delegate work to peers they don't fully trust**. Every message is
 Ed25519-signed, a peer's identity *is* its public key, and an untrusted peer's
