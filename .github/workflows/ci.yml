@@ -58,11 +58,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # fully static
+          # Each musl target builds on its NATIVE-arch runner, so no cross linker
+          # or C toolchain is needed — just `rustup target add`. That is the whole
+          # portability claim, exercised directly.
           - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, static: true }
-          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl, static: true }
-          # static CRT
-          - { os: windows-latest, target: x86_64-pc-windows-msvc, static: true }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, static: true }
+          # static CRT, native
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, static: false }
           # macOS cannot statically link libSystem; "no third-party dylibs" is
           # the strongest guarantee available, and pure Rust gives it.
           - { os: macos-latest, target: aarch64-apple-darwin, static: false }
@@ -80,6 +82,9 @@ jobs:
             export RUSTFLAGS="$RUSTFLAGS -C target-feature=+crt-static"
           fi
           cargo build --release --all-features --target ${{ matrix.target }}
-      - name: Assert static (Linux musl only)
-        if: matrix.static && startsWith(matrix.os, 'ubuntu')
-        run: file target/${{ matrix.target }}/release/praetor-bus | grep -q "statically linked"
+      - name: Assert static (Linux musl)
+        if: matrix.static
+        # Modern Rust musl builds are static-PIE, which `file` reports as
+        # "static-pie linked"; older ones say "statically linked". Match either
+        # (both contain "static"); a dynamic binary says "dynamically linked".
+        run: file target/${{ matrix.target }}/release/praetor-bus | grep -qi static
