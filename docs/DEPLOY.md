@@ -62,6 +62,34 @@ claude --mcp-config alice.mcp.json --dangerously-load-development-channels serve
 That's the whole deployment. Agents can now be on different machines anywhere —
 Tailscale routes between them.
 
+## Sleep, reboot, and reconnection
+
+If the bus runs on a laptop that sleeps or shuts down, nothing needs babysitting:
+
+- **`praetor-mcp` reconnects on its own.** Each agent's long-poll retries forever
+  with backoff; a vanished bus is not an error it treats as fatal, so it never
+  crashes and it resumes the moment the bus is reachable again. It dials a fresh
+  connection each poll (no keep-alive), so a socket that went stale across a
+  sleep/wake is never reused. Verified end to end: kill the bus mid-poll, restart
+  it, and the next message is delivered — no restart of the agent needed.
+- **The bus doesn't crash when an agent disconnects.** A dropped long-poll is
+  just a dropped request; the bus holds no per-connection state.
+- **Auto-start the bus on boot** with the included user service:
+  [`contrib/praetor-bus.service`](contrib/praetor-bus.service) (`systemctl --user
+  enable --now praetor-bus`, plus `loginctl enable-linger` to start before login).
+  `Restart=always` also brings it back if it ever dies. On *sleep/wake* the
+  process is only frozen and thaws by itself — systemd isn't involved.
+
+Two honest caveats:
+
+- **Queues are in-memory.** A bus *restart* (shutdown/reboot/crash) drops anything
+  that was queued for offline agents. Live conversations just reconnect and carry
+  on; only undelivered backlog is lost. (Persistence is deferred — see
+  [`DIRECTORY.md`](../DIRECTORY.md).)
+- **Claude Code sessions aren't daemons.** After a full shutdown you relaunch your
+  sessions yourself; when you do, `praetor-mcp` reconnects to the bus
+  automatically. Only the bus auto-starts.
+
 ## Federation later — just add a URL
 
 `PRAETOR_URL` is a **comma-separated list**. To remove the single-point-of-failure,

@@ -214,33 +214,23 @@ fn new_msg_id() -> String {
 async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleServer>, url: String) {
     let me = inner.key.id();
     let me_b64 = me.to_b64();
+    // Track connection state so we log only on transitions, not every retry —
+    // otherwise a bus that's down for a while spams a warning every backoff.
+    let mut online = true;
     loop {
-        let resp = inner
-            .http
-            .get(format!("{url}/recv"))
-            .query(&[("me", me_b64.as_str()), ("timeout_ms", "25000")])
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await;
-
-        let value: serde_json::Value = match resp {
-            Ok(r) => match r.error_for_status().map(|r| r.json()) {
-                Ok(fut) => match fut.await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!("bus response parse error: {e}");
-                        backoff().await;
-                        continue;
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("bus error: {e}");
-                    backoff().await;
-                    continue;
+        let value = match poll_once(&inner.http, &url, &me_b64).await {
+            Ok(v) => {
+                if !online {
+                    tracing::info!(%url, "reconnected to bus");
+                    online = true;
                 }
-            },
+                v
+            }
             Err(e) => {
-                tracing::warn!("bus unreachable: {e}");
+                if online {
+                    tracing::warn!(%url, "bus connection lost, will keep retrying: {e}");
+                    online = false;
+                }
                 backoff().await;
                 continue;
             }
@@ -298,6 +288,20 @@ async fn inbound_loop(inner: Arc<Inner>, peer: rmcp::service::Peer<rmcp::RoleSer
     }
 }
 
+/// One long-poll against a relay. Any transport, HTTP-status, or decode failure
+/// is an `Err` the loop treats uniformly (retry) — the bus simply being absent
+/// is not exceptional here.
+async fn poll_once(http: &reqwest::Client, url: &str, me_b64: &str) -> Result<serde_json::Value> {
+    let resp = http
+        .get(format!("{url}/recv"))
+        .query(&[("me", me_b64), ("timeout_ms", "25000")])
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(resp.json().await?)
+}
+
 async fn push(
     peer: &rmcp::service::Peer<rmcp::RoleServer>,
     content: &str,
@@ -347,11 +351,22 @@ async fn main() -> Result<()> {
         "agent starting"
     );
 
+    // `connect_timeout` fails fast when the bus is down (e.g. laptop asleep) so
+    // the loop can retry promptly. `pool_max_idle_per_host(0)` disables keep-alive
+    // so a socket that went stale across a sleep/wake is never reused — each poll
+    // dials fresh, which for a 25s long-poll cadence costs nothing and removes a
+    // whole class of "first request after wake fails" flakes.
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(0)
+        .build()
+        .context("building HTTP client")?;
+
     let inner = Arc::new(Inner {
         key,
         policy,
         urls: args.url,
-        http: reqwest::Client::new(),
+        http,
         dedupe: Mutex::new(Dedupe::new(DEDUPE_CAP)),
         quarantine: Mutex::new(Quarantine::new(QUARANTINE_CAP)),
     });

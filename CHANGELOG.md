@@ -26,6 +26,11 @@ All notable changes to this project are documented here. The format is based on
 - `contrib/stop-hook.sh` — the pre-channels fallback, for environments where
   channels can't run.
 
+- `praetor-mcp` reconnects to the bus automatically after a sleep/reboot/crash
+  (retry-forever long-poll, no socket reuse across wake) and never crashes when
+  the bus is absent. A systemd user service (`contrib/praetor-bus.service`)
+  auto-starts the bus on boot.
+
 ### Notable choices
 - **No TLS**: loopback bus + signed messages; removes the only C dependency, so
   binaries are pure-Rust and statically linkable.

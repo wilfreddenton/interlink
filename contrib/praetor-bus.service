@@ -1,0 +1,33 @@
+# systemd *user* service: keep the praetor bus running, restart it if it dies,
+# and start it automatically on boot.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp contrib/praetor-bus.service ~/.config/systemd/user/
+#   # edit ExecStart below for your binary path and address
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now praetor-bus
+#   # to start at boot without logging in (a laptop that reboots):
+#   loginctl enable-linger "$USER"
+#
+# On sleep/wake the process is only frozen and thaws on its own — systemd does
+# nothing. It matters for a full shutdown/reboot (start on boot) and for crashes
+# (Restart=always). Agents reconnect on their own either way.
+
+[Unit]
+Description=praetor message bus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Bind 127.0.0.1 if the bus and all agents are on THIS machine. Bind the tailnet
+# IP ($(tailscale ip -4)) or 0.0.0.0 if agents live on other machines. 0.0.0.0 is
+# the most sleep/wake-resilient (doesn't depend on a specific interface being up
+# at start) but is only safe on a host with no public inbound — a laptop behind
+# NAT / on a tailnet.
+ExecStart=%h/.cargo/bin/praetor-bus --addr 127.0.0.1:9440
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
