@@ -1,11 +1,13 @@
 {
   "mcpServers": {
     "praetor": {
-      "command": "/home/wilfred/Documents/Datasphere/target/release/praetor-mcp",
+      "type": "stdio",
+      "command": "${HOME}/.cargo/bin/praetor-mcp",
       "env": {
-        "PRAETOR_KEY": "/home/wilfred/Documents/Datasphere/config/alice.key",
-        "PRAETOR_PEERS": "/home/wilfred/Documents/Datasphere/config/alice-peers.json",
-        "PRAETOR_URL": "http://127.0.0.1:9440"
+        "PRAETOR_KEY": "${HOME}/.config/praetor/alice.key",
+        "PRAETOR_PEERS": "${HOME}/.config/praetor/alice-peers.json",
+        "PRAETOR_URL": "http://127.0.0.1:9440",
+        "PRAETOR_AGENT_DB": "${HOME}/.local/state/praetor/alice-agent.redb"
       }
     }
   }

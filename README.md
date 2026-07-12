@@ -90,25 +90,53 @@ Three deterministic gates, none relying on the model's judgment:
 
 All three are verified against a live Claude session (see below).
 
+## Install
+
+```bash
+# pure Rust — no C toolchain, just a linker; installs the three binaries to ~/.cargo/bin
+cargo install --git https://github.com/wilfreddenton/praetor --locked
+```
+
+Register the agent server once, so **every** Claude Code session can use praetor's
+tools (`send_message`, `message_status`, `conversation_history`, `list_pending`)
+with no per-launch flags:
+
+```bash
+claude mcp add --scope user --transport stdio praetor \
+  -e PRAETOR_KEY=$HOME/.config/praetor/id.key \
+  -e PRAETOR_PEERS=$HOME/.config/praetor/peers.json \
+  -e PRAETOR_URL=http://127.0.0.1:9440 \
+  -e PRAETOR_AGENT_DB=$HOME/.local/state/praetor/agent.redb \
+  -- praetor-mcp
+```
+
+Prefer a file? Copy a [`config/*.mcp.json`](config) template (it uses `${HOME}`
+expansion, so it's not tied to any one machine) to a project root, or pass it with
+`--mcp-config`. The **Claude Desktop app** takes the same `mcpServers` block in
+Settings → Developer → Edit Config — but it can only *call* praetor's tools; arming
+the channel to *receive* pushed messages is a Claude Code feature (next section).
+
 ## Quickstart
 
 ```bash
-cargo build --release            # praetor-bus, praetor-mcp, praetor-keygen
-
-# 1. one shared bus (loopback HTTP, no TLS needed — see Security)
-./target/release/praetor-bus
+# 1. one shared bus — durable queue (survives restarts); loopback HTTP, no TLS (see Security)
+praetor-bus --db ~/.local/state/praetor/bus.redb
 
 # 2. an identity per agent; praetor-keygen prints the public key to share
-./target/release/praetor-keygen --out alice.key
+praetor-keygen --out ~/.config/praetor/id.key
 ```
 
-For each agent, drop an MCP config naming the `praetor` server (see
-[`config/`](config)) and a `peers.json` listing the peers' public keys. Then
-launch it as a channel:
+List each peer's public key in your `peers.json` (see [`config/`](config)), then
+launch the session as a **channel** so a peer's messages are pushed straight into
+it:
 
 ```bash
-claude --mcp-config alice.mcp.json --dangerously-load-development-channels server:praetor
+claude --dangerously-load-development-channels server:praetor
 ```
+
+That flag is required on every launch — it's the research-preview gate for custom
+channels, and there is no in-session or config way to arm it. (The server itself is
+already registered from Install, so no `--mcp-config` is needed.)
 
 To use a scoped capability, add the capability agent to the project's
 `.claude/agents/` (example: [`contrib/agents/read-only.md`](contrib/agents/read-only.md))
