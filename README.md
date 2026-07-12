@@ -90,6 +90,32 @@ Three deterministic gates, none relying on the model's judgment:
 
 All three are verified against a live Claude session (see below).
 
+## How it fits together
+
+Two components, two lifecycles:
+
+```
+  Claude session ──┐                                    ┌── Claude session
+   praetor-mcp     ├──►  praetor-bus  (one broker)  ◄──┤    praetor-mcp
+   (per session)   ┘      routes by recipient key       └   (per session)
+```
+
+- **`praetor-bus`** — the broker. You run **one**, somewhere reachable (a service;
+  see [Deploying](#deploying)). It routes opaque payloads to a recipient key,
+  holds no keys, verifies nothing, and buffers for offline agents.
+- **`praetor-mcp`** — the agent-side MCP server. **One per Claude session**,
+  started by Claude Code. It signs/verifies messages, enforces the trust gates,
+  and long-polls the bus.
+
+An agent finds the bus through **`PRAETOR_URL`** (default `http://127.0.0.1:9440`).
+That's the whole wire between them — point every agent's `PRAETOR_URL` at your bus
+and they can talk. (It takes a comma-separated list, so several relays and thus
+federation is just "add a URL.")
+
+So installing the agent (below) is half of it: **you also need a bus running.**
+The npm/plugin paths ship the agent; get the bus from `cargo install` (which
+installs all three binaries) or a release archive, and run it once as a service.
+
 ## Install
 
 **Batteries included — the plugin.** One command bundles the MCP server (via
@@ -124,6 +150,10 @@ claude mcp add --scope user --transport stdio praetor \
   -- praetor-mcp
 ```
 
+Set `PRAETOR_URL` to your bus (above it's `127.0.0.1:9440`, i.e. a bus on this
+same machine — use the bus host's address otherwise). Don't have a bus yet? See
+Quickstart step 1.
+
 Prefer a file? Copy a [`config/*.mcp.json`](config) template (it uses `${HOME}`
 expansion, so it's not tied to any one machine) to a project root, or pass it with
 `--mcp-config`. The **Claude Desktop app** takes the same `mcpServers` block in
@@ -133,10 +163,12 @@ the channel to *receive* pushed messages is a Claude Code feature (next section)
 ## Quickstart
 
 ```bash
-# 1. one shared bus — durable queue (survives restarts); loopback HTTP, no TLS (see Security)
-praetor-bus --db ~/.local/state/praetor/bus.redb
+# 1. Start the ONE bus everything connects to (run it once, ideally as a service;
+#    durable queue, loopback HTTP, no TLS — see Security). Agents reach it via
+#    PRAETOR_URL, which defaulted to this address in the Install snippet.
+praetor-bus --db ~/.local/state/praetor/bus.redb   # listens on 127.0.0.1:9440
 
-# 2. an identity per agent; praetor-keygen prints the public key to share
+# 2. An identity per agent; praetor-keygen prints the public key to share.
 praetor-keygen --out ~/.config/praetor/id.key
 ```
 
