@@ -144,6 +144,11 @@ and register the `PreToolUse` guard
 ([`contrib/pretooluse-guard.sh`](contrib/pretooluse-guard.sh)) in
 `.claude/settings.json`.
 
+A capability agent that should **reply** to the peer must list
+`mcp__praetor__send_message` in its `tools:` (alongside `mcp__praetor__fetch_request`
+to read the request) — without it the subagent can act but not answer, silently.
+The `read-only.md` template includes both.
+
 ## See it without a Claude session
 
 ```bash
