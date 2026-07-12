@@ -19,6 +19,9 @@ That registers, in every session:
   agent) and `peer-admin-guard.sh` (keeps `add_peer`/`remove_peer` out of
   subagents), wired via `${CLAUDE_PLUGIN_ROOT}`.
 - **Agent** — `read-only`, a scoped capability handler.
+- **Skill** — `praetor`, an on-demand playbook for operating the mesh (relaying a
+  request and reporting the reply, handling incoming messages, onboarding peers
+  via discover/pairing).
 
 ## One-time setup
 
