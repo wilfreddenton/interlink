@@ -1,0 +1,8 @@
+{
+  "name": "praetor",
+  "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP channels.",
+  "version": "0.1.0",
+  "author": { "name": "Wilfred Denton", "url": "https://github.com/wilfreddenton" },
+  "homepage": "https://github.com/wilfreddenton/praetor",
+  "license": "MIT"
+}

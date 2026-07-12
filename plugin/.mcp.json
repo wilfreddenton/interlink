@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "praetor": {
+      "command": "npx",
+      "args": ["-y", "praetor-mcp"],
+      "env": {
+        "PRAETOR_KEY": "${HOME}/.config/praetor/id.key",
+        "PRAETOR_PEERS": "${HOME}/.config/praetor/peers.json",
+        "PRAETOR_URL": "${PRAETOR_URL:-http://127.0.0.1:9440}",
+        "PRAETOR_AGENT_DB": "${HOME}/.local/state/praetor/agent.redb"
+      }
+    }
+  }
+}

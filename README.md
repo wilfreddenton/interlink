@@ -92,10 +92,24 @@ All three are verified against a live Claude session (see below).
 
 ## Install
 
+**Batteries included — the plugin.** One command bundles the MCP server (via
+`npx praetor-mcp`), both `PreToolUse` guard hooks, and the `read-only` capability
+agent — no `settings.json` editing:
+
+```
+/plugin marketplace add wilfreddenton/praetor
+/plugin install praetor@praetor
+```
+
+See [`plugin/`](plugin) for the one-time key/peers setup. Prefer to wire it up
+yourself? The pieces:
+
 ```bash
 # pure Rust — no C toolchain, just a linker; installs the three binaries to ~/.cargo/bin
 cargo install --git https://github.com/wilfreddenton/praetor --locked
 ```
+
+Or `npx praetor-mcp` (the pure-Rust binary, delivered via npm — see [`npm/`](npm)).
 
 Register the agent server once, so **every** Claude Code session can use praetor's
 tools (`send_message`, `message_status`, `conversation_history`, `list_pending`)

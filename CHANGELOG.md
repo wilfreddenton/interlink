@@ -55,6 +55,17 @@ All notable changes to this project are documented here. The format is based on
   tools; scoped/untrusted peers' bodies are recorded as metadata only and never
   written to disk.
 
+### Distribution
+- **Claude Code plugin** ([`plugin/`](plugin)) — bundles the MCP server, both
+  guard hooks, and the `read-only` agent; installable via a marketplace
+  (`/plugin marketplace add wilfreddenton/praetor`).
+- **npm wrapper** ([`npm/`](npm)) — `npx praetor-mcp` fetches the platform's
+  prebuilt static binary (the esbuild/Biome model), so the pure-Rust core gets
+  the `npx` ergonomics the MCP ecosystem expects.
+- **Release workflow** — a tag builds and publishes static binaries for Linux
+  (x86_64/aarch64 musl), macOS (aarch64), and Windows (x86_64); the no-C
+  invariant keeps every target a native-runner build, no cross toolchain.
+
 ### Notable choices
 - **No TLS**: loopback bus + signed messages; removes the only C dependency, so
   binaries are pure-Rust and statically linkable.

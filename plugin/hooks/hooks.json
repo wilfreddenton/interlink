@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__praetor__fetch_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/pretooluse-guard.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__praetor__add_peer|mcp__praetor__remove_peer",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/peer-admin-guard.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
