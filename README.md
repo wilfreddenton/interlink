@@ -149,6 +149,13 @@ A capability agent that should **reply** to the peer must list
 to read the request) — without it the subagent can act but not answer, silently.
 The `read-only.md` template includes both.
 
+**Managing peers from chat.** `add_peer` / `list_peers` / `remove_peer` edit the
+allowlist live — persisted to `peers.json`, applied to the very next message, no
+restart. Because they change *who is trusted*, they're operator actions:
+[`contrib/peer-admin-guard.sh`](contrib/peer-admin-guard.sh) denies them inside a
+subagent (so an untrusted scoped peer can't add itself), and Claude Code prompts
+you before each change in the main agent.
+
 ## See it without a Claude session
 
 ```bash

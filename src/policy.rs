@@ -78,6 +78,23 @@ impl Grant {
     pub fn is_unrestricted(&self) -> bool {
         matches!(self, Grant::All)
     }
+
+    /// Parse the `may` field: `"*"` → unrestricted, else a capability name.
+    pub fn from_may(s: &str) -> Result<Self> {
+        match s {
+            "*" => Ok(Grant::All),
+            "" => bail!("capability name must not be empty"),
+            name => Ok(Grant::Scoped(name.to_string())),
+        }
+    }
+
+    /// The `may` string form, for display and serialization.
+    pub fn as_may(&self) -> &str {
+        match self {
+            Grant::All => "*",
+            Grant::Scoped(name) => name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +174,72 @@ impl Policy {
 
     pub fn is_empty(&self) -> bool {
         self.peers.is_empty()
+    }
+
+    /// All peers, for listing.
+    pub fn peers(&self) -> &[Peer] {
+        &self.peers
+    }
+
+    /// Add a peer, or update the grant of an existing one (matched by petname).
+    /// Rejects a petname already bound to a *different* key, or a key already
+    /// held under a *different* petname — either would make the authenticated
+    /// sender lookup ambiguous, exactly as [`Policy::parse`] guards against.
+    pub fn add(&mut self, petname: &str, key_b64: &str, grant: Grant) -> Result<()> {
+        let id = AgentId::from_b64(key_b64)
+            .with_context(|| format!("peer '{petname}' has an invalid key"))?;
+        if let Some(other) = self
+            .peers
+            .iter()
+            .find(|p| p.id == id && p.petname != petname)
+        {
+            bail!("that key is already authorized as '{}'", other.petname);
+        }
+        match self.peers.iter_mut().find(|p| p.petname == petname) {
+            Some(existing) => {
+                existing.id = id;
+                existing.grant = grant;
+            }
+            None => self.peers.push(Peer {
+                petname: petname.to_string(),
+                id,
+                grant,
+            }),
+        }
+        Ok(())
+    }
+
+    /// Remove a peer by petname; returns whether one was removed.
+    pub fn remove(&mut self, petname: &str) -> bool {
+        let before = self.peers.len();
+        self.peers.retain(|p| p.petname != petname);
+        self.peers.len() != before
+    }
+
+    /// Serialize back to the `peers.json` object form.
+    pub fn to_json(&self) -> Result<String> {
+        let map: BTreeMap<String, RawPeer> = self
+            .peers
+            .iter()
+            .map(|p| {
+                (
+                    p.petname.clone(),
+                    RawPeer {
+                        key: p.id.to_b64(),
+                        may: p.grant.clone(),
+                    },
+                )
+            })
+            .collect();
+        serde_json::to_string_pretty(&map).context("serializing peers")
+    }
+
+    /// Persist the current allowlist to `path`.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let mut json = self.to_json()?;
+        json.push('\n');
+        std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -259,5 +342,58 @@ mod tests {
             serde_json::to_string(&Grant::Scoped("run-tests".into())).unwrap(),
             "\"run-tests\""
         );
+    }
+
+    #[test]
+    fn add_then_resolve_and_persist_round_trip() {
+        let k = AgentKey::generate().unwrap();
+        let mut p = Policy::default();
+        p.add("desktop", &k.id().to_b64(), Grant::All).unwrap();
+        assert_eq!(p.resolve("desktop").unwrap(), k.id());
+        // re-parsing the serialized form yields an equivalent policy
+        let reparsed = Policy::parse(&p.to_json().unwrap()).unwrap();
+        assert_eq!(reparsed.resolve("desktop").unwrap(), k.id());
+        assert!(reparsed.peer(k.id()).unwrap().grant.is_unrestricted());
+    }
+
+    #[test]
+    fn add_updates_grant_for_same_petname() {
+        let k = AgentKey::generate().unwrap();
+        let mut p = Policy::default();
+        p.add("bot", &k.id().to_b64(), Grant::All).unwrap();
+        p.add("bot", &k.id().to_b64(), Grant::Scoped("read-only".into()))
+            .unwrap();
+        assert_eq!(p.len(), 1, "same petname updates in place");
+        assert_eq!(
+            p.peer(k.id()).unwrap().grant,
+            Grant::Scoped("read-only".into())
+        );
+    }
+
+    #[test]
+    fn add_rejects_key_under_a_second_petname() {
+        let k = AgentKey::generate().unwrap();
+        let mut p = Policy::default();
+        p.add("first", &k.id().to_b64(), Grant::All).unwrap();
+        assert!(
+            p.add("second", &k.id().to_b64(), Grant::All).is_err(),
+            "one key must not get two petnames"
+        );
+    }
+
+    #[test]
+    fn add_rejects_invalid_key() {
+        let mut p = Policy::default();
+        assert!(p.add("x", "not-a-key", Grant::All).is_err());
+    }
+
+    #[test]
+    fn remove_reports_whether_it_removed() {
+        let k = AgentKey::generate().unwrap();
+        let mut p = Policy::default();
+        p.add("gone", &k.id().to_b64(), Grant::All).unwrap();
+        assert!(p.remove("gone"));
+        assert!(!p.remove("gone"), "already absent");
+        assert!(p.is_empty());
     }
 }

@@ -12,7 +12,8 @@ All notable changes to this project are documented here. The format is based on
   the bus and, for each message, runs the inbound gate (verify signature →
   allowlist → addressed-to-me → fresh → dedupe) before pushing
   `notifications/claude/channel`. Tools: `send_message`, `fetch_request`,
-  `message_status`, `conversation_history`, `list_pending`.
+  `message_status`, `conversation_history`, `list_pending`, and live peer
+  management (`add_peer`, `list_peers`, `remove_peer`).
 - `praetor-keygen` — generate an Ed25519 identity; the public key is the id.
 - **`identity`** — Ed25519, public-key-as-identity, domain-separated signing,
   `verify_strict`, freshness + replay protection.
@@ -22,6 +23,12 @@ All notable changes to this project are documented here. The format is based on
   via `fetch_request`, gated to subagents by
   [`contrib/pretooluse-guard.sh`](contrib/pretooluse-guard.sh); tool limits are
   the capability agent's frontmatter.
+- **Live peer management** — `add_peer` / `list_peers` / `remove_peer` edit the
+  allowlist from chat, persisted to `peers.json` and applied immediately (the
+  inbound gate re-reads it per message). Kept out of scoped subagents by
+  [`contrib/peer-admin-guard.sh`](contrib/peer-admin-guard.sh) so an untrusted
+  peer can't escalate itself onto the allowlist; the main agent still gets
+  Claude Code's normal permission prompt.
 - Live integration harnesses in [`experiments/`](experiments) that drive a real
   Claude session through a PTY, plus the runtime facts they established.
 - `contrib/stop-hook.sh` — the pre-channels fallback, for environments where
