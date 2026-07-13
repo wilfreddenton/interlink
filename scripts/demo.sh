@@ -23,12 +23,12 @@ BOB=$(  "$BIN/interlink-keygen" --out "$D/bob.key"   | awk '/^public key/{print 
 EVE=$(  "$BIN/interlink-keygen" --out "$D/eve.key"   | awk '/^public key/{print $4}')
 printf '  alice %s…\n  bob   %s…\n  eve   %s…\n' "${ALICE:0:16}" "${BOB:0:16}" "${EVE:0:16}"
 
-say "2. bob's peers.json: alice is fully trusted (*); eve is not listed at all."
+say "2. bob's peers.json: alice is admitted; eve is not listed at all."
 cat > "$D/bob-peers.json" <<EOF
-{ "alice": { "key": "$ALICE", "may": "*" } }
+{ "alice": { "key": "$ALICE" } }
 EOF
 sed 's/^/  /' "$D/bob-peers.json"
-printf '{ "bob": { "key": "%s", "may": "*" } }\n' "$BOB" > "$D/to-bob.json"
+printf '{ "bob": { "key": "%s" } }\n' "$BOB" > "$D/to-bob.json"
 
 say "3. Start the bus (loopback HTTP; messages are signed, so no TLS needed)."
 run "interlink-bus --addr 127.0.0.1:9440"
