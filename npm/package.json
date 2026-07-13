@@ -1,7 +1,7 @@
 {
   "name": "interlink-mcp",
-  "version": "0.2.1",
-  "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP. Pure-Rust binary, delivered via npm.",
+  "version": "0.3.0",
+  "description": "Cryptographically-authenticated, cross-machine agent-to-agent chat for Claude Code, over MCP. Pure-Rust binary, delivered via npm.",
   "keywords": ["claude-code", "mcp", "agents", "ai", "rust", "ed25519"],
   "homepage": "https://github.com/wilfreddenton/interlink",
   "repository": { "type": "git", "url": "git+https://github.com/wilfreddenton/interlink.git" },

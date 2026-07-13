@@ -1,12 +1,12 @@
 {
   "name": "interlink",
-  "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code.",
+  "description": "Cryptographically-authenticated, cross-machine agent-to-agent chat for Claude Code.",
   "owner": { "name": "Wilfred Denton", "url": "https://github.com/wilfreddenton" },
   "plugins": [
     {
       "name": "interlink",
       "source": "./plugin",
-      "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP channels."
+      "description": "Cryptographically-authenticated, cross-machine agent-to-agent chat for Claude Code, over MCP channels."
     }
   ]
 }

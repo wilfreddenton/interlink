@@ -1,7 +1,7 @@
 {
   "name": "interlink",
-  "description": "Secure agent-to-agent messaging and capability-scoped delegation for Claude Code, over MCP channels.",
-  "version": "0.2.1",
+  "description": "Cryptographically-authenticated, cross-machine agent-to-agent chat for Claude Code, over MCP channels.",
+  "version": "0.3.0",
   "author": { "name": "Wilfred Denton", "url": "https://github.com/wilfreddenton" },
   "homepage": "https://github.com/wilfreddenton/interlink",
   "license": "MIT"

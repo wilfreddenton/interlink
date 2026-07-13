@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # A self-contained tour of interlink's trust model — no Claude session needed.
-# It drives the real binaries and shows three things: a signed message from an
-# allowlisted peer is delivered, a stranger's is dropped, and a scoped peer's
-# body is withheld (only metadata is pushed).
+# It drives the real binaries and shows two things: a signed message from an
+# allowlisted peer is delivered, and a stranger's is dropped.
 #
 # Record it with:  asciinema rec -c ./scripts/demo.sh  (or vhs, or just run it)
 set -euo pipefail
@@ -72,7 +71,6 @@ else
 fi
 
 say "That's the difference: a signature proves WHO sent it; the allowlist decides"
-say "whether it exists at all. Scoped peers (not shown here) get their bodies"
-say "withheld and handled by a capability subagent — see experiments/live_scoped_test.py."
+say "whether it reaches you at all."
 echo
 echo "✓ done"

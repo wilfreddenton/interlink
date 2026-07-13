@@ -345,13 +345,13 @@ mod tests {
     #[test]
     fn pair_table_put_take_and_find() {
         let mut t = PairTable::new(8);
-        t.put("aaaabbbbcccc".into(), "read-only".into());
-        assert_eq!(t.get("aaaabbbbcccc"), Some(&"read-only".to_string()));
+        t.put("aaaabbbbcccc".into(), "desktop".into());
+        assert_eq!(t.get("aaaabbbbcccc"), Some(&"desktop".to_string()));
         assert_eq!(
             t.find("aaaabbbb"), // exact 8-char fingerprint
-            Some(("aaaabbbbcccc".into(), "read-only".into()))
+            Some(("aaaabbbbcccc".into(), "desktop".into()))
         );
-        assert_eq!(t.take("aaaabbbbcccc"), Some("read-only".into()));
+        assert_eq!(t.take("aaaabbbbcccc"), Some("desktop".into()));
         assert!(t.is_empty());
     }
 }
