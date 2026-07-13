@@ -6,8 +6,8 @@
 //! through the inbound gate ([`interlink::agent::decide`]), and pushes the ones
 //! that pass. Outbound goes through the `send_message` tool.
 //!
-//! A `*` peer's message is pushed inline. A scoped peer's body is withheld
-//! pending the subagent enforcement layer; only a metadata notice is pushed.
+//! An admitted peer's message is pushed inline; a non-peer may only knock to
+//! pair, surfaced as a bounded, metadata-only notice.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;

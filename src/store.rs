@@ -37,9 +37,8 @@ pub enum Dir {
     Out,
 }
 
-/// One entry in the local conversation log. `text` is `None` when the body was
-/// deliberately withheld — a scoped/untrusted peer's message is recorded as
-/// having happened, but its text is never persisted to disk (quarantine).
+/// One entry in the local conversation log. `text` may be `None` for records
+/// where only the fact of a message (not its body) needs keeping.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogRecord {
     pub msg_id: String,

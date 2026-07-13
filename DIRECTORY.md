@@ -2,9 +2,8 @@
 
 Signed identity with pre-shared keys is **built** — each agent has an Ed25519
 keypair and knows peers' public keys via `peers.json`. How it works (signing,
-`verify_strict`, the inbound gate, capability scoping) is in
-[`DESIGN.md`](DESIGN.md) and the code (`src/identity.rs`, `src/policy.rs`,
-`src/agent.rs`).
+`verify_strict`, the inbound gate) is in [`DESIGN.md`](DESIGN.md) and the code
+(`src/identity.rs`, `src/policy.rs`, `src/agent.rs`).
 
 This file records what was researched and deliberately left for later. None of
 it is needed for a trusted mesh; the natural trigger for each is noted.
@@ -13,8 +12,7 @@ it is needed for a trusted mesh; the natural trigger for each is noted.
 
 Implemented: a bus roster with TTL presence, `discover`, and a human-gated
 pairing handshake (`request_pair` / `accept_pair`), keys pinned TOFU. See
-[`docs/DISCOVERY.md`](docs/DISCOVERY.md). Still open: **capability lookup** ("who
-can do X"), which pairs naturally with semantic matching below.
+[`docs/DISCOVERY.md`](docs/DISCOVERY.md).
 
 ## Opening the relay to strangers
 
@@ -46,13 +44,6 @@ Matrix `m.in_reply_to`, Nostr NIP-10 `root`/`reply` markers): carry the parent's
 a `send_message` argument, and a threaded `conversation_history` render. The one
 care point is that `reply_to` must enter the signed `canonical()` encoding, which
 bumps the domain tag `interlink-v1\0` → `interlink-v2\0`.
-
-## Semantic capability matching
-
-Route by "who can do X" instead of an exact capability name: local embeddings via
-`fastembed` + `bge-small-en-v1.5` (384-dim), brute-force cosine over an in-memory
-`Vec`, per-capability max-similarity, with a lexical fallback when the model can't
-be fetched. Fully local; nothing leaves the machine.
 
 ## Post-quantum signatures
 

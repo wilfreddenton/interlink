@@ -1,8 +1,10 @@
 # Discovery & Pairing (design)
 
-> Status: **implemented** (v0.2.0). Bus roster + `discover`; the `kind` field
-> (signing domain `interlink-v2`); the gate's knock branch; and
-> `request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`.
+> Status: **implemented** (chat-only, v0.3.0). Bus roster + `discover`; the `kind`
+> field (signing domain `interlink-v1`); the gate's knock branch; and
+> `request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`. Pairing is
+> mutual admission — the per-side capability grant it originally carried was
+> removed with the capability model.
 
 Today trust is configured out-of-band: you exchange public keys and hand-edit
 `peers.json` (or `add_peer`). This design lets nodes **start with no peers**,
@@ -44,49 +46,41 @@ the roster from all of them; the union is deduped by pubkey.
 
 Messages gain a **`kind`** field: `message` (default, today's behavior),
 `pair_request`, `pair_accept`. `kind` (and the knock's name) enter the signed
-canonical encoding, so the signing domain bumps `interlink-v1` → `interlink-v2` (a
-coordinated, pre-1.0 break).
+canonical encoding under the `interlink-v1` signing domain.
 
 Flow, A pairing with B:
 
 1. A `discover`s the roster, finds B's key by its `name (fingerprint)`.
 2. A sends a `pair_request` to B carrying only **A's self-claimed name** (signed).
-   The grant A will assign B is A's *local* decision (below) and never crosses the
-   wire.
+   No grant crosses the wire — pairing only admits.
 3. B's gate sees a `pair_request` from a non-peer and, instead of dropping it,
    **holds it** (bounded, drop-oldest, deduped) and pushes a **metadata-only**
    notice: *"Pairing request from fingerprint `a1b2c3` claiming name 'A'. Review
    with `list_pair_requests`."* The claimed name is shown as an untrusted label.
    No attacker-controlled free text reaches the session.
 
-## 3. Accept → mutual, each side grants from its own capabilities
+## 3. Accept → mutual admission
 
-A **capability is local**: `Grant::Scoped("run-tests")` means "handle this peer
-with *my* `.claude/agents/run-tests.md` subagent," which runs on the *receiving*
-side. So the grant each node assigns references *its own* capability files — the
-two nodes need **not** share a capability vocabulary, and `"*"` (inline, no file)
-is the only universal grant. Each side therefore sets, independently, the grant it
-*hosts* for the other:
+Pairing establishes **mutual admission**: each side adds the other's key to its
+own `peers.json`. There is no grant to choose — an admitted peer is a full chat
+partner (interlink has no capability tier).
 
-New tools: `discover`, `request_pair(target, grant)`, `list_pair_requests`,
-`accept_pair(fingerprint, grant)`, `reject_pair(fingerprint)`.
+Tools: `discover`, `request_pair(target)`, `list_pair_requests`,
+`accept_pair(fingerprint)`, `reject_pair(fingerprint)`.
 
-- `request_pair(target, grant)` — A chooses the grant **A gives B** (from A's own
-  capabilities or `"*"`); it's applied to A's `peers.json` when B accepts.
-- **Accept** — `accept_pair(fingerprint, grant)` — B chooses the grant **B gives
-  A** (from B's own capabilities or `"*"`), writes B→A into `peers.json`, and sends
-  `pair_accept` back. A then writes B→A's counterpart (the grant A chose at step 2)
-  into its own `peers.json`. Two independent grants; each side controls what it
-  hosts, so `"*"`↔`"*"`, `"*"`↔`read-only`, or any mix all work.
+- `request_pair(target)` — A knocks B, recording that it knocked (so an
+  unsolicited accept from a key A never knocked is ignored).
+- **Accept** — `accept_pair(fingerprint)` — B admits A into its `peers.json` and
+  sends `pair_accept` back; A, seeing an accept for a knock it made, admits B in
+  return. Both end up mutual chat peers.
 - **Reject** drops the held request; nothing is written.
-- `accept_pair` / `reject_pair` are **operator-only** — kept out of subagents by
-  the same guard pattern as `add_peer`, and confirm-prompted in the main agent.
-  Pairing changes who you trust; a peer's message must never drive it.
+- `accept_pair` / `reject_pair` are **operator-only**: pairing changes who you
+  trust, so a peer's message must never drive it.
 
 ## Threat model / bounding
 
-- **No free text from strangers.** A knock carries identity + name + requested
-  capability only; the name is surfaced as an untrusted, escaped label.
+- **No free text from strangers.** A knock carries identity + name only; the name
+  is surfaced as an untrusted, escaped label.
 - **Bounded knock queue** (drop-oldest) + dedupe by sender key, so a non-peer
   can't exhaust memory or spam you unboundedly. (Per-key rate limiting on
   `/announce` and knocks is the follow-on for a *public* relay — see
@@ -104,8 +98,8 @@ New tools: `discover`, `request_pair(target, grant)`, `list_pair_requests`,
 
 1. Registry: `/announce` + `/roster` on the bus; heartbeat announce + `discover`
    tool in the agent. (See who's online.)
-2. Wire format: `kind` field + `interlink-v2` domain; `pair_request`/`pair_accept`.
-3. Gate: the knock branch + bounded pending-knock store (mirrors `Quarantine`).
+2. Wire format: `kind` field + `interlink-v1` domain; `pair_request`/`pair_accept`.
+3. Gate: the knock branch + bounded pending-knock store.
 4. Tools: `request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`,
    + the operator guard.
 5. End-to-end test on the two-machine tailnet: both boot with empty `peers.json`,
@@ -113,10 +107,9 @@ New tools: `discover`, `request_pair(target, grant)`, `list_pair_requests`,
 
 ## Decisions
 
-- **Grants are per-side, not symmetric.** A capability is a local subagent file,
-  so each node grants the other from its *own* capabilities (or `"*"`); the two
-  need not share a vocabulary. `request_pair`/`accept_pair` each take the grant
-  that side hosts.
+- **Pairing is mutual admission, not a grant.** Each side adds the other's key; an
+  admitted peer is a full chat partner. (The old per-side capability grant was
+  removed with the capability model — see the CHANGELOG.)
 - **Targeting by name, fingerprint as tiebreak.** `request_pair` resolves a name
   through the roster for convenience, but requires the fingerprint when a name is
   ambiguous — and the key, not the name, is what gets pinned (TOFU).
