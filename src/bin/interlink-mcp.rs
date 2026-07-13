@@ -328,6 +328,18 @@ impl Agent {
             .await
             .map_err(|e| McpError::internal_error(format!("queuing message: {e}"), None))?;
         self.inner.outbox.notify_one();
+        // Progress heartbeat: our own update/terminal resets the hook's timer; a
+        // terminal also clears the executor marker for that task.
+        if let Some(st) = status {
+            if st == TaskStatus::Update || st.is_terminal() {
+                progress_touch_last_update();
+            }
+            if st.is_terminal()
+                && let Some(tid) = args.task_id.as_deref()
+            {
+                progress_clear_marker_if(tid);
+            }
+        }
         let tag = match (args.task_id.as_deref(), status) {
             (Some(t), Some(s)) => format!(" [task {t} · {}]", s.as_str()),
             (Some(t), None) => format!(" [task {t}]"),
@@ -396,6 +408,7 @@ impl Agent {
             .await
             .map_err(|e| McpError::internal_error(format!("queuing message: {e}"), None))?;
         self.inner.outbox.notify_one();
+        progress_clear_marker_if(&args.task_id);
         Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "sent cancel for task '{}' to {} (msg_id {msg_id})",
             args.task_id, args.to
@@ -809,6 +822,48 @@ fn new_msg_id() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+// --- progress-nudge state (see docs/AUTO-PROGRESS.md) ---
+// A fixed XDG path the PostToolUse hook and this server both compute, so the hook
+// (a separate process) can tell whether a task is running and how long it's been
+// quiet. All best-effort: progress is non-critical, so failures are ignored.
+
+fn progress_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
+    Some(base.join("interlink"))
+}
+
+/// Record that this session is executing `task_id` for `peer` — an inbound task
+/// request means we're the executor, so the hook may nudge a progress update.
+fn progress_set_marker(task_id: &str, peer: &str) {
+    let Some(dir) = progress_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let body = json!({ "task_id": task_id, "peer": peer, "since": interlink::now_ms() });
+    let _ = std::fs::write(dir.join("current-task.json"), body.to_string());
+    progress_touch_last_update(); // arm from now, don't nudge instantly
+}
+
+/// Clear the marker only if it points at `task_id` (a task we just finished/aborted).
+fn progress_clear_marker_if(task_id: &str) {
+    let Some(dir) = progress_dir() else { return };
+    let path = dir.join("current-task.json");
+    if let Ok(s) = std::fs::read_to_string(&path)
+        && let Ok(v) = serde_json::from_str::<Value>(&s)
+        && v.get("task_id").and_then(|t| t.as_str()) == Some(task_id)
+    {
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Reset the heartbeat — called when we send an update/terminal, so the hook only
+/// fires in the gaps between our own updates (shared debounce timer).
+fn progress_touch_last_update() {
+    let Some(dir) = progress_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("last-update"), interlink::now_ms().to_string());
+}
+
 /// Long-poll one relay and push everything that passes the gate. Several of
 /// these run concurrently (one per relay), all sharing `inner` — so the dedupe
 /// set collapses a message that arrives via more than one relay to a single
@@ -881,6 +936,15 @@ async fn inbound_loop(
                 in_reply_to,
             }) => {
                 log_inbound(&inner.store, &msg.msg_id, &petname, Some(&text)).await;
+                // Progress marker: an inbound task request (task_id + no status)
+                // makes us the executor; a canceled for it clears the marker.
+                if let Some(tid) = task_id.as_deref() {
+                    match status {
+                        None => progress_set_marker(tid, &petname),
+                        Some(TaskStatus::Canceled) => progress_clear_marker_if(tid),
+                        _ => {}
+                    }
+                }
                 let status_str = status.map(TaskStatus::as_str);
                 // Make task context legible in the content the model reads, not
                 // only in meta — so it reliably branches on a needs_input/result.

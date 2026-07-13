@@ -18,6 +18,10 @@ That registers, in every session:
   / `reject_pair`).
 - **Skill** — `interlink`, an on-demand playbook for chatting with a peer,
   surfacing incoming messages, and connecting a peer via discover/pairing.
+- **Hook** — a `PostToolUse` progress-nudge (Node, cross-platform): while a session
+  executes a peer's task and goes quiet, it reminds the model to send a progress
+  update. Debounced + task-gated; tune with `INTERLINK_PROGRESS_INTERVAL` (seconds,
+  default 60; `0` disables).
 
 ## One-time setup
 

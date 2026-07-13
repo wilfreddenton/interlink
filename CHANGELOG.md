@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.1]
+
+### Added
+- **Auto-progress nudge** — a `PostToolUse` hook that, when a session is executing
+  a peer's task and has gone quiet longer than `INTERLINK_PROGRESS_INTERVAL`
+  seconds (default **60**), reminds the model to send a `status=update`. The hook
+  sets the *cadence*; the model writes the *content*. Debounced and task-gated: any
+  outgoing update resets a shared timer, so a well-behaved agent's own milestone
+  updates keep the hook silent, and idle / non-collaboration sessions never fire.
+  The MCP server writes a small current-task marker + heartbeat under the XDG state
+  dir that the hook reads; wire-compatible with 0.4.0 (no protocol change). The
+  hook is Node (cross-platform, incl. the Windows desktop). Config:
+  `INTERLINK_PROGRESS_INTERVAL` (`0` disables). Design:
+  [`docs/AUTO-PROGRESS.md`](docs/AUTO-PROGRESS.md).
+
 ## [0.4.0]
 
 ### Added — task tracking (correlation, status, cancellation)
