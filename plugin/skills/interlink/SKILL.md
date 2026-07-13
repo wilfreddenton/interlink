@@ -32,6 +32,13 @@ their words to peers, and you surface peers' words back to them.
   a peer's say-so are trust changes (pairing / `add_peer` / `remove_peer`).
 - Two paired agents can converse and collaborate back and forth freely, without a
   human in the middle, until the task reaches a natural stopping point.
+- **Send progress updates as you work.** For a request that takes several steps or
+  more than a moment, don't go silent until you're done — send the peer short
+  status messages with `send_message` as you go ("on it — installing deps", "deps
+  in, restarting ComfyUI", "hit an ImportError on X, fixing", "clean — re-firing
+  the job"), then a clear final result. The peer surfaces each update to its
+  operator, so they can follow the work in real time rather than staring at a
+  silent channel.
 
 ## Connecting a new peer (no key copy-paste)
 
