@@ -111,7 +111,11 @@ impl Policy {
     pub fn add(&mut self, petname: &str, key_b64: &str) -> Result<()> {
         let id = AgentId::from_b64(key_b64)
             .with_context(|| format!("peer '{petname}' has an invalid key"))?;
-        if let Some(other) = self.peers.iter().find(|p| p.id == id && p.petname != petname) {
+        if let Some(other) = self
+            .peers
+            .iter()
+            .find(|p| p.id == id && p.petname != petname)
+        {
             bail!("that key is already authorized as '{}'", other.petname);
         }
         match self.peers.iter_mut().find(|p| p.petname == petname) {
@@ -136,14 +140,7 @@ impl Policy {
         let map: BTreeMap<String, RawPeer> = self
             .peers
             .iter()
-            .map(|p| {
-                (
-                    p.petname.clone(),
-                    RawPeer {
-                        key: p.id.to_b64(),
-                    },
-                )
-            })
+            .map(|p| (p.petname.clone(), RawPeer { key: p.id.to_b64() }))
             .collect();
         serde_json::to_string_pretty(&map).context("serializing peers")
     }

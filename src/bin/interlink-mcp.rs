@@ -605,7 +605,6 @@ impl Agent {
         };
         Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
     }
-
 }
 
 impl Agent {
