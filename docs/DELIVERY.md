@@ -106,17 +106,26 @@ Two ids name one session:
 
 The channel-less listener is a hook (has Claude's id); the inbox is keyed by the
 server's id. To make them match, **Claude's `session_id` becomes the id**, bridged
-to the server by an **`mcp_tool` SessionStart hook** that calls a new
-`register_session` tool:
+to the server by an **`mcp_tool` Stop hook** that calls a new `register_session`
+tool:
 
 ```json
-{ "type": "mcp_tool", "server": "interlink", "tool": "register_session",
+{ "type": "mcp_tool", "server": "plugin:interlink:interlink", "tool": "register_session",
   "input": { "session_id": "${session_id}" } }
 ```
 
 `[DOCS]` `mcp_tool` hooks call a named server's tool with `${session_id}`
 substitution, routed to this session's server — no model, no cwd-hash, no collision.
-The `wait` listener independently gets the same id from its hook stdin.
+The plugin-scoped server name is `plugin:<plugin>:<server>` `[DOCS]`. The `wait`
+listener independently gets the same id from its hook stdin.
+
+**Why Stop, not SessionStart** `[TESTED: fails at SessionStart; DOCS: expected]`:
+`SessionStart` hooks run **before** stdio MCP servers finish connecting, so an
+`mcp_tool` hook there fails with "server … not connected" on first run — documented
+behavior, not a bug. `register_session` therefore rides the **Stop** event (placed
+before the async `wait` command in the same hooks array): the synchronous `mcp_tool`
+runs first, on a connected server, then `wait` launches. It re-fires (idempotently)
+each Stop.
 
 **Reconcile the first-message race** `[audit MUST-FIX]`: `register_session` may not
 land before the first inbound. The server starts on a **provisional** id; on
@@ -132,8 +141,8 @@ window is lost.
 |---|---|---|
 | MCP server | stdio MCP | verify + route; buffer inbound to `inbox/<id>.jsonl`; send/discover/pair; hold + reconcile the bound `session_id` |
 | `register_session` | MCP tool | bind Claude's `session_id`, migrate provisional inbox |
-| SessionStart hook | `mcp_tool` | `register_session(${session_id})` — deterministic |
-| Stop hook | `command`, `async`+`asyncRewake` | run `interlink-mcp wait` → block on inbox → `exit 2` on a real message |
+| Stop hook (1st) | `mcp_tool` | `register_session(${session_id})` — server is connected by Stop |
+| Stop hook (2nd) | `command`, `async`+`asyncRewake` | run `interlink-mcp wait` → block on inbox → `exit 2` on a real message |
 | `interlink-mcp wait` | CLI subcommand | single-instance (`flock`) listener; session from hook stdin; both-streams payload |
 
 Removed vs. the shipped design: the `arm_listener` tool, the `decision:block` nag
@@ -150,7 +159,9 @@ hook, model-driven arming/re-arming.
 | `mcp_tool` hook: named server + `${session_id}`, this session's instance | `[DOCS]` ✅ |
 | `mcp_tool` hooks canNOT be async/asyncRewake (run synchronously) | `[TESTED]` ✅ → listener stays a command hook |
 | MCP stdio server cannot get `session_id` itself | `[DOCS]` ✅ |
-| SessionStart fires on startup + re-fires on resume/clear/compact | `[DOCS]` ✅ (register is idempotent) |
+| `mcp_tool` hook at SessionStart fails — server not yet connected | `[TESTED]` ✅ + `[DOCS]` → register rides Stop instead |
+| plugin MCP server name in a hook is `plugin:<plugin>:<server>` | `[DOCS]` ✅ |
+| Stop fires after each turn, server connected by then; register is idempotent | `[DOCS]` ✅ |
 | command-hook timeout default 600s, overridable | `[DOCS]` ✅ |
 | `exit 2` documented as error/stderr, ignores stdout — but asyncRewake showed stdout | `[DOCS] vs [TESTED]` ⚠ → both-streams mitigation |
 | channel push silently dropped if off; undetectable | `[DOCS]` ✅ |

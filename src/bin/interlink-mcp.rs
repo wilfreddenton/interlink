@@ -273,7 +273,7 @@ struct DiscoverArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RegisterSessionArgs {
-    /// Claude Code's session id (the SessionStart hook passes `${session_id}`).
+    /// Claude Code's session id (the Stop hook passes `${session_id}`).
     session_id: String,
 }
 
@@ -583,7 +583,7 @@ impl Agent {
 
     #[tool(
         description = "Bind this Claude session's id to interlink so peers can reach you and the \
-                       inbox listener finds your messages. Called automatically by the SessionStart \
+                       inbox listener finds your messages. Called automatically by the Stop \
                        hook — you normally don't call it yourself. Idempotent."
     )]
     async fn register_session(
@@ -1131,8 +1131,8 @@ impl ServerHandler for Agent {
              the name.";
         let mut instructions = base.to_string();
         if !channel_mode() {
-            // Channel-less mode: delivery is fully automatic (a SessionStart hook
-            // binds the session; a background Stop-hook listener wakes you). The
+            // Channel-less mode: delivery is fully automatic (a Stop hook binds
+            // the session; a background Stop-hook listener wakes you). The
             // model just needs to recognize and act on the arriving messages.
             instructions.push_str(
                 "\n\nIncoming peer messages are delivered automatically as \
