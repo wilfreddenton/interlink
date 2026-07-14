@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.2]
+
+### Added
+- **`arm_listener` tool** — returns the exact, ready-to-run command that arms this
+  session's channel-less inbox listener (the running binary's full path +
+  `wait --session <id>`). The Stop hook and server instructions now tell the model to
+  *call this tool and run what it returns*, instead of pointing at buried `get_info`
+  text — which the model kept mis-reading as a missing tool and then hunting for the
+  binary by hand. First-run arming is now a deterministic two-step (call tool → run
+  its output) rather than trial-and-error.
+
 ## [0.6.1]
 
 ### Fixed — channel-less first-run was janky

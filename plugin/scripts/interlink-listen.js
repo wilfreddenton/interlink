@@ -47,14 +47,11 @@ process.stdin.on("end", () => {
   // own binary path (not on PATH under npx), so we point at the server instructions.
   const reason =
     "You are in interlink's channel-less mode and have no inbox listener running, so " +
-    "you would park without hearing incoming peer messages. Before you stop, arm this " +
-    "session's listener as a background task (Bash, run_in_background: true). The exact " +
-    "command is in the interlink MCP server's instructions (get_info) — it begins with " +
-    "the server's OWN binary path and ends with `wait --session <this-session-id>`. Run " +
-    "THAT command verbatim; do NOT guess a bare `interlink-mcp`, it is not on PATH. (If " +
-    "you already ran it once this session, re-run the same command.) It blocks until a " +
-    "peer message arrives, prints an <interlink> block, and exits — which wakes you. " +
-    "Then handle the message and re-arm the same command.";
+    "you would park without hearing incoming peer messages. Before you stop: call the " +
+    "interlink `arm_listener` tool, then run the exact command it returns as a Bash " +
+    "background task (run_in_background: true). That command blocks until a peer message " +
+    "arrives, prints an <interlink> block, and exits — which wakes you. When it returns, " +
+    "handle the message and re-arm (call arm_listener and run it again).";
 
   process.stdout.write(JSON.stringify({ decision: "block", reason }));
   process.exit(0);

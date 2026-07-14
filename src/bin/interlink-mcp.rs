@@ -575,6 +575,35 @@ impl Agent {
     }
 
     #[tool(
+        description = "Get the exact command to arm this session's channel-less message listener. \
+                       Call this, then run the returned command as a Bash background task \
+                       (run_in_background: true). It blocks until a peer message arrives, surfaces \
+                       it, and exits — which wakes you; then call arm_listener again and re-run to \
+                       re-arm. In channel mode there's nothing to arm."
+    )]
+    async fn arm_listener(&self) -> Result<CallToolResult, McpError> {
+        if channel_mode() {
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                "Channels are on — messages are pushed into this session directly; \
+                 there is no background listener to arm."
+                    .to_string(),
+            )]));
+        }
+        let sid = self.inner.session.read().unwrap().session_id.clone();
+        let exe = std::env::current_exe()
+            .ok()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "interlink-mcp".to_string());
+        let body = format!(
+            "Run this now as a Bash background task (run_in_background: true) to arm your inbox \
+             listener:\n\n    {exe} wait --session {sid}\n\nIt blocks until a peer message arrives, \
+             prints it as an <interlink> block, and exits — which wakes you. When it returns, \
+             handle the message, then call arm_listener again and re-run to keep listening."
+        );
+        Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
+    }
+
+    #[tool(
         description = "List nodes currently announced on the bus roster, grouped by identity, each \
                        with its live sessions (session_id · cwd · git repo · summary) — the \
                        session_id is what you pass to send_message. Pass `peer` (a petname, name, \
@@ -1091,24 +1120,18 @@ impl ServerHandler for Agent {
              the name.";
         let mut instructions = base.to_string();
         if !channel_mode() {
-            // Channel-less mode: the model must arm THIS session's own inbox
-            // listener. The command is session-specific (each session has its own
-            // inbox), so give it verbatim. Use our own executable path — a plugin
-            // launches the server via `npx`, so `interlink-mcp` is not on PATH; the
-            // running binary always is.
-            let sid = self.inner.session.read().unwrap().session_id.clone();
-            let exe = std::env::current_exe()
-                .ok()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "interlink-mcp".to_string());
-            instructions.push_str(&format!(
-                "\n\nCHANNEL-LESS MODE (this session): to hear incoming messages, keep this exact \
-                 background task armed (Bash, run_in_background: true) — it is specific to THIS \
-                 session, do not change the id:\n    {exe} wait --session {sid}\nIt blocks \
-                 until a peer message arrives, prints it as an <interlink> block, and exits, which \
-                 wakes you. When it returns, handle the message and re-run the SAME command to \
-                 re-arm. The Stop hook will remind you if it lapses."
-            ));
+            // Channel-less mode: to hear incoming messages the model keeps a
+            // background listener armed. Rather than bury the (session-specific,
+            // npx-path) command here, point at the `arm_listener` tool, which returns
+            // it ready to run — the Stop hook does the same.
+            instructions.push_str(
+                "\n\nCHANNEL-LESS MODE: incoming messages arrive via a background listener you keep \
+                 armed. To (re)arm it, call the `arm_listener` tool and run the command it returns \
+                 as a Bash background task (run_in_background: true) — it blocks until a peer \
+                 message arrives, surfaces it as an <interlink> block, and exits, which wakes you. \
+                 Do this at the start of a session and again after each message. The Stop hook \
+                 reminds you if the listener lapses.",
+            );
         }
         ServerInfo::new(caps).with_instructions(instructions)
     }
