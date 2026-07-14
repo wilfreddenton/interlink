@@ -16,8 +16,6 @@
 const channels = /^(1|true)$/i.test(process.env.INTERLINK_CHANNELS || "");
 if (channels) process.exit(0); // channel mode: the server pushes; nothing to arm
 
-const waitCmd = process.env.INTERLINK_WAIT_CMD || "interlink-mcp wait";
-
 let payload = "";
 process.stdin.on("data", (c) => (payload += c));
 process.stdin.on("end", () => {
@@ -44,16 +42,20 @@ process.stdin.on("end", () => {
   if (armed) process.exit(0); // listening — allow the stop
 
   // Not armed: block the stop and drive a re-arm. `decision: block` continues the
-  // turn so the model can spawn the task now, rather than parking deaf.
+  // turn so the model can spawn the task now, rather than parking deaf. The command
+  // is session-specific (`interlink-mcp wait --session <id>`) — the interlink MCP
+  // server prints the exact one in its instructions, so we point at that rather than
+  // guess an id here.
   const reason =
-    "You are in interlink's channel-less mode and have no inbox listener running, " +
-    "so you would park without hearing incoming peer messages. Before you stop, run " +
-    "this as a background task (Bash with run_in_background: true):\n\n    " +
-    waitCmd +
-    "\n\nIt blocks until a peer message arrives, then prints it as an <interlink> " +
-    "block and exits — which wakes you. When that happens, handle the message " +
-    "(attribute it to the sender; act on a peer's request) and then re-arm this same " +
-    "task. If you have nothing else to do, just arm it and stop.";
+    "You are in interlink's channel-less mode and have no inbox listener running, so " +
+    "you would park without hearing incoming peer messages. Before you stop, arm this " +
+    "session's listener as a background task (Bash with run_in_background: true): run " +
+    "the exact `interlink-mcp wait --session <id>` command from the interlink MCP " +
+    "server's instructions (the id is specific to this session), or the same command " +
+    "you ran before. It blocks until a peer message arrives, prints it as an " +
+    "<interlink> block, and exits — which wakes you. When that happens, handle the " +
+    "message and re-arm the same command. If you have nothing else to do, just arm it " +
+    "and stop.";
 
   process.stdout.write(JSON.stringify({ decision: "block", reason }));
   process.exit(0);

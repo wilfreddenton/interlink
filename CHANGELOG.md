@@ -18,24 +18,22 @@ All notable changes to this project are documented here. The format is based on
   `INTERLINK_CHANNELS=1` and starts `claude --dangerously-load-development-channels
   plugin:interlink@interlink`, forwarding extra args. Use it when you have channels
   and want the native push; otherwise just run `claude`.
-- **`INTERLINK_CHANNELS=1`** selects channel mode (push, random per-session id, Stop
-  hook self-disables). Default/unset selects fallback mode (inbox + `wait`, and a
-  **stable session name** — `INTERLINK_SESSION`, default `main` — so a peer reaches
-  the listener across restarts and the `wait` task + hook share a fixed inbox path).
-  The two paths are mutually exclusive per session, so a message is never delivered
-  twice.
+- **`INTERLINK_CHANNELS=1`** selects channel mode (push, Stop hook self-disables);
+  default/unset selects fallback mode (inbox + `wait`). **Both** mint a **random
+  per-session id**, so concurrent sessions on one machine never share an inbox — each
+  fallback session drains its own `inbox/<id>.jsonl`, and the server prints that
+  session's exact `interlink-mcp wait --session <id>` command in its instructions.
+  `INTERLINK_SESSION` can pin a stable name instead (opt-in). The two delivery paths
+  are mutually exclusive per session, so a message is never delivered twice.
 
 ### Notes
 - The fallback relies on a background task **completing** re-invoking the main agent
-  (the same wake that surfaces a finished background subagent). This is how current
-  Claude Code behaves but is **not documented**, so verify it in your build before
-  relying on it — the Stop hook uses `decision: "block"` (with a `stop_hook_active`
-  guard so it can never trap the agent) and detects the listener by task `name`.
-- Fallback is designed for one interlink session per machine (the channel-blocked
-  work case); run several by giving each a distinct `INTERLINK_SESSION`. Channel mode
-  keeps random per-session ids and multi-session addressing as before.
-- npm-only installs (no binary on `PATH`) should set `INTERLINK_WAIT_CMD="npx -y
-  interlink-mcp wait"` so the Stop hook re-arms the right command.
+  (the same wake that surfaces a finished background subagent). This is **not
+  documented** but is confirmed working in current Claude Code; verify it in your
+  build. The Stop hook uses `decision: "block"` (with a `stop_hook_active` guard so it
+  can never trap the agent) and detects the listener by task `name`.
+- Concurrent fallback sessions on one machine each get their own inbox — no config
+  needed. Channel mode keeps native push and multi-session addressing as before.
 
 ## [0.5.2]
 
