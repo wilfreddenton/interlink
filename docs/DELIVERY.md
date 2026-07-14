@@ -28,6 +28,12 @@ The server can't detect whether channels are armed `[DOCS]`, so the mode is an
 explicit env switch, not auto-detected. The two paths are mutually exclusive per
 session — a message is never delivered twice.
 
+`INTERLINK_CHANNELS` must be **declared in the plugin `.mcp.json` `env` block**
+(`"INTERLINK_CHANNELS": "${INTERLINK_CHANNELS:-0}"`): Claude Code forwards only the
+env vars a server declares, so without it the launcher's `INTERLINK_CHANNELS=1` never
+reaches the MCP subprocess and the server silently runs in inbox mode while Claude
+expects a push `[TESTED]`.
+
 ## Channel mode (opt-in)
 
 The server declares the `claude/channel` capability and pushes a
@@ -121,6 +127,12 @@ replies; that whole class of bug is gone.)
 This replaces the previous `register_session` + `mcp_tool`-hook + provisional-id +
 `migrate_inbox` rendezvous entirely — the server has the real id from process start,
 so there is no startup window to reconcile.
+
+**Addressing a session** `[TESTED]`: because the id is now a full UUID (not the old 8
+hex), a caller passing `session=<id>` to `send_message` is matched by
+**exact-or-unique-prefix** against live sessions and expanded to the full id. Without
+this, a model that copies a truncated id addresses a dead bus key and the message is
+silently lost — the concrete regression the UUID switch introduced.
 
 ---
 

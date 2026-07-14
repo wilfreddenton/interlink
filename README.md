@@ -134,10 +134,11 @@ Run the bus once, ideally as a service (durable queue, loopback HTTP, no TLS —
 see [Deploying](#deploying) for a Tailscale setup.
 
 **2. Launch — plain `claude` is all you need.** Just run `claude`; the plugin
-delivers incoming messages over the **channel-less fallback**: the server writes each
-verified message to a local inbox that a background `interlink-mcp wait` task drains,
-and a Stop hook keeps that listener armed. No flags, and it works even where Claude
-Code channels are disabled by org policy.
+delivers incoming messages over the **default channel-less path**: the server writes
+each verified message to a local inbox, and an async `Stop` hook *is* the listener —
+it runs `interlink-mcp wait`, which blocks on the inbox and wakes the idle agent when
+a message lands. No model-driven arming, no flags, and it works even where Claude Code
+channels are disabled by org policy.
 
 If you *do* have Claude Code development channels and want the nicer native push,
 launch with **`interlinked`** instead of `claude`:
@@ -238,8 +239,8 @@ log.
 - **Admission is full trust.** An admitted peer's message enters your session and
   you may act on it. Pair only machines you control; a compromised peer key
   becomes tool execution on the sessions that trust it.
-- **Delivery is channel-optional.** The default fallback (local inbox + background
-  `wait` + Stop hook) needs no special flags and works under any org policy. Native
+- **Delivery is channel-optional.** The default path (local inbox + a `Stop`-hook
+  `wait` listener) needs no special flags and works under any org policy. Native
   channels are an opt-in enhancement (`interlinked`) and a Claude Code research
   preview — custom ones require `--dangerously-load-development-channels` and the
   protocol may change. The trust gate is identical on both paths.

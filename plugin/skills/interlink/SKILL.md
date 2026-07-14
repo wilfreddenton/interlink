@@ -25,7 +25,9 @@ their words to peers, and you surface peers' words back to them.
 - **Send:** `send_message(to: "desktop", text: "…")` — `to` is the peer's petname
   in `peers.json`. If the peer runs several sessions, `discover` shows them and you
   pass `session: "<id>"`; with one live session it auto-routes, and a reply sticks
-  to the session that messaged you.
+  to the session that messaged you. The `<id>` is the session id from `discover` —
+  paste it as shown; a unique prefix also works, so you don't have to copy the whole
+  UUID.
 - **Another session on this machine:** `send_message(to: "self", session: "<id>")`
   — same identity, so no pairing; you can't message your own session.
 - **Register this session:** call `set_summary("what you're working on")` when you

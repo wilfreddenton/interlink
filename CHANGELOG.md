@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0]
+
+### Changed — the session id is Claude's own id
+- **The server adopts `CLAUDE_CODE_SESSION_ID`** (Claude Code v2.1.154+ injects it
+  into every stdio MCP subprocess) as its session id, in preference to a random one.
+  Every restart of a session's server now shares one **stable** id, so a peer's reply
+  always addresses the same inbox and the `wait` hook (which reads the same id from
+  its stdin) drains the same file — with no handshake. `INTERLINK_SESSION` still pins
+  an id for manual/testing use; a random id is the fallback for non-Claude usage.
+
+### Fixed
+- **Replies to a specific session no longer vanish.** Session ids are UUIDs now, but
+  the model tends to pass a short prefix (the old ids were 8 hex; fingerprints are
+  shown truncated). `send_message` used the hint verbatim, so a truncated id became a
+  dead routing key and the message was lost. It now resolves a `session` hint by
+  **exact-or-unique-prefix** match against live sessions to the full id.
+- **Delayed messages are no longer dropped as stale.** The freshness gate was a
+  symmetric 60s window, which fought the durable keep-until-ack bus — a reply that
+  took over a minute (agent latency, a server-restart gap, a briefly-offline peer) was
+  rejected. Freshness is now **asymmetric**: tight in the future (60s clock-skew
+  guard), generous in the past (24h) so a legitimately delayed message still lands.
+- **Channel mode now reaches the server.** `INTERLINK_CHANNELS` is declared in the
+  plugin `.mcp.json`, so the `interlinked` launcher's env actually propagates to the
+  MCP subprocess (Claude Code only forwards declared vars) — previously the server ran
+  in inbox mode even when Claude had channels on.
+
+### Changed — the listener is the hook, not the model
+- The channel-less receive path is now **hook-is-the-listener**: the async
+  `asyncRewake` `Stop` hook runs `interlink-mcp wait` directly, which blocks on the
+  inbox and `exit 2`s to wake the idle agent on a real message. No model-driven
+  arming, so the re-arm loop is gone; a `flock` gives single-instance dedup and
+  releases on process death. Delivery writes to both stdout and stderr.
+
+### Removed
+- **`arm_listener` tool**, the `register_session` tool, the `mcp_tool`
+  SessionStart/Stop rendezvous hook, the provisional-id + `migrate_inbox` reconcile,
+  and the `decision:block` nag — all obsoleted by `CLAUDE_CODE_SESSION_ID` (rendezvous)
+  and hook-is-the-listener (arming).
+
 ## [0.6.2]
 
 ### Added

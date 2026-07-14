@@ -17,10 +17,11 @@ points, so the facts below were established empirically against a real session:
 - **A Claude Code agent isn't a persistent process** — it exists only during a
   turn. So a peer's message has to be *pushed in* from outside; the agent can't
   sit and listen.
-- **Claude Code channels do exactly that push** (`notifications/claude/channel`).
-  Before finding them, an earlier version reproduced the mechanism by hand with a
-  Stop hook that kept a background long-poll re-armed — it worked, but channels
-  are the supported path, so it was retired.
+- **Claude Code channels do exactly that push** (`notifications/claude/channel`) —
+  the nicest wake when available. But they require `--dangerously-load-development-
+  channels` and an org policy that's often off, so they're an **opt-in** enhancement.
+  The **default** reproduces the push channel-less: a local inbox plus an async
+  `Stop` hook that runs `interlink-mcp wait` and `exit 2`s to wake the agent.
 - **Channels only arm with an interactive TTY**; headless `claude -p` connects
   the MCP server but never engages the channel subsystem.
 - **`rmcp` can be a channel**: declare `experimental: {"claude/channel": {}}` and
@@ -72,13 +73,19 @@ interlink establishes trust *cryptographically* and gates admission through a
 you make once, at pairing; there is no pretense of containing a collaborator you
 don't trust.
 
-## Why sending is a tool but receiving is a channel
+## Why sending is a tool but receiving needs a wake
 
 Sending is a discrete, model-initiated action carrying free text — a natural MCP
 tool (`send_message`), where the payload is a JSON string that never touches a
-shell. Receiving must *wake* a session with an event, which only the channel push
-can do. That asymmetry is principled: send is a tool because the payload is
-untrusted text; receive is a channel because nothing else pushes.
+shell. Receiving is different: it must *wake* an idle session with an event, and an
+MCP tool can't do that. A native Claude Code **channel push** is the cleanest wake,
+but channels require flags and an org policy that are often unavailable — so the
+**default** path is channel-less: the server buffers to a local inbox and an async
+`Stop` hook runs `interlink-mcp wait`, which blocks on the inbox and `exit 2`s to
+wake the agent (a background hook *completing* is the one non-channel wake signal).
+Same asymmetry either way: send is a tool because the payload is untrusted text;
+receive needs a pushed event, delivered by a channel when available and by the
+hook-listener otherwise. See `docs/DELIVERY.md` for the full delivery model.
 
 ## The bus
 

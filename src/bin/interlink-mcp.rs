@@ -353,9 +353,11 @@ impl Agent {
     #[tool(
         description = "Send a message to a peer agent, addressed by its petname in peers.json. \
                        Use to:\"self\" to reach another live session on THIS machine (same \
-                       identity — no pairing needed); pass session=<id> to pick which one. The \
-                       message is queued durably and delivered in the background, so it is not lost \
-                       if the bus is momentarily unreachable; use message_status to track it."
+                       identity — no pairing needed); pass session=<id> to pick which one (the id \
+                       from discover — a unique prefix is accepted, so you needn't copy the whole \
+                       UUID). The message is queued durably and delivered in the background, so it \
+                       is not lost if the bus is momentarily unreachable; use message_status to \
+                       track it."
     )]
     async fn send_message(
         &self,

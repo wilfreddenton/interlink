@@ -26,10 +26,10 @@ That registers, in every session:
   - `PostToolUse` progress-nudge: while a session executes a peer's task and goes
     quiet, reminds the model to send a progress update. Debounced + task-gated; tune
     with `INTERLINK_PROGRESS_INTERVAL` (seconds, default 60; `0` disables).
-  - `Stop` inbox-listener: in the channel-less default, keeps a background
-    `interlink-mcp wait` task armed so incoming messages still wake the agent. The MCP
-    server tells the model the exact session-specific command (using its own binary
-    path, so it works even when launched via `npx`). Self-disables when
+  - `Stop` inbox-listener: in the channel-less default, an async `asyncRewake` hook
+    *is* the listener — it runs `interlink-mcp wait`, which blocks on the inbox and
+    `exit 2`s to wake the idle agent when a peer message lands (no model-driven
+    arming). A `flock` keeps it single-instance. Self-disables when
     `INTERLINK_CHANNELS=1`.
 
 ## One-time setup
