@@ -78,6 +78,10 @@ name = "interlink-mcp"
 path = "src/bin/interlink-mcp.rs"
 required-features = ["agent"]
 
+[[bin]]
+name = "interlinked"
+path = "src/bin/interlinked.rs"
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

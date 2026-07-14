@@ -63,11 +63,12 @@ jobs:
           #     wrapper downloads and runs directly.
           cp "$bindir/interlink-mcp$ext" "interlink-mcp-$target$ext"
 
-          # (2) A full archive with all three binaries — for humans, and for a
+          # (2) A full archive with all the binaries — for humans, and for a
           #     plugin that bundles them instead of using the npm wrapper.
           stage="interlink-$target"
           mkdir "$stage"
-          cp "$bindir/interlink-mcp$ext" "$bindir/interlink-bus$ext" "$bindir/interlink-keygen$ext" "$stage/"
+          cp "$bindir/interlink-mcp$ext" "$bindir/interlink-bus$ext" \
+             "$bindir/interlink-keygen$ext" "$bindir/interlinked$ext" "$stage/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a "$stage.zip" "$stage" >/dev/null
             echo "archive=$stage.zip" >> "$GITHUB_OUTPUT"
