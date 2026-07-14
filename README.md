@@ -166,9 +166,10 @@ pairing on a *cryptographic* identity is rare among agent-chat MCP servers.
 interlink installs as a user-scope plugin, so **every** Claude Code session runs
 its own `interlink-mcp` — and they're all addressable. Each mints a random
 `session_id` at startup and polls its own inbox `key#session_id`, so there's no
-shared mailbox and no fan-out. A session announces to the roster the moment it does
-interlink work (its first `send_message` or a `set_summary`), so idle chats stay
-invisible; `discover` then lists each identity with its **live sessions**
+shared mailbox and no fan-out. A session **registers on startup** (node + session;
+node registration is idempotent — the bus groups sessions under one `pubkey`) and
+unregisters on close, so the roster reflects your currently-open sessions.
+`discover` lists each identity with its **live sessions**
 (`session_id · cwd · git repo · summary`):
 
 ```

@@ -61,16 +61,23 @@ that reached the bus is still keep-until-ack durable for an offline recipient. O
 messages queued *while the bus was unreachable* would be lost on a hard restart —
 an edge case that survives sleep.
 
-## No gate — register on use
+## Register node + session on start
 
-There is **no `INTERLINK_NODE` flag** and no alias change. The per-session id
-already isolates every session (own inbox, own in-memory store), so a plain chat's
-`interlink-mcp` is harmless — it just idles. To keep plain chats out of everyone's
-pick-list, a session **announces to the registry only when it engages** — its first
-`send_message` or a `set_summary`. A chat that never does interlink work never
-announces, so it's invisible to peers. (It still runs the server and polls its own
-empty inbox — cheap; eliminating even that would mean not shipping the MCP as a
-user-scope plugin, which is a separate call.)
+There is **no `INTERLINK_NODE` flag** and no alias change. A session **announces on
+startup** — node and session together — and heartbeats to stay live. **Node
+registration is idempotent:** every session under one identity announces the same
+`pubkey`, the bus keys the roster by `pubkey#session_id` and groups by `pubkey`, and
+a re-announce is an upsert, so N sessions never produce a duplicate node. This is the
+plain, intuitive model: if a session is up, it's discoverable; when it closes it
+unregisters.
+
+(An earlier design registered lazily — only on the first `send_message` / `set_summary`
+— to keep plain, non-interlink chats out of the roster, since the MCP is a user-scope
+plugin that every session spawns. It was dropped: it made a fresh session invisible to
+itself and created a standoff where two fresh sessions never saw each other. The
+trade-off is that every plugin-loaded session now appears; gating that on a real
+"is this an interlink session" signal — if one ever becomes detectable — is a separate
+call.)
 
 ## Polling & presence
 
@@ -82,13 +89,13 @@ Each live session:
   nothing handles a message unless a session is live, so a node-level inbox would
   only be a store-and-forward queue — which the keep-until-ack bus already provides
   per inbox. It bought nothing over "reach a live session," so it's gone.)
-- **heartbeats** a signed announcement ~every 30s once it has engaged.
+- **heartbeats** a signed announcement ~every 30s (from startup).
 
 ## Bus registry & cleanup
 
-The roster becomes session-scoped. A live, engaged session heartbeats a **signed**
-announcement `{ pubkey, session_id, cwd, git_root, summary, ts, sig }`; the bus
-groups by `pubkey`, so `/roster` returns each identity → its live sessions.
+The roster is session-scoped. A live session heartbeats a **signed** announcement
+`{ pubkey, session_id, cwd, git_root, summary, ts, sig }`; the bus groups by
+`pubkey`, so `/roster` returns each identity → its live sessions.
 
 Removal is two things, on two clocks:
 - **Presence — short TTL (~90s).** Miss the heartbeat window → dropped from the
@@ -145,7 +152,7 @@ daemon, nothing handles a knock otherwise.
 - **`interlink-mcp`** — mint a random `session_id`; **in-memory store always** (drop
   the `--db`/`INTERLINK_AGENT_DB` durable path for the agent); poll `key#session_id`
   only (no node inbox); knocks are sent to a target session's inbox; announce on
-  first `send_message` / `set_summary`;
+  startup + heartbeat;
   `SIGTERM` graceful-unregister; new `session` arg on `send_message` (auto-route if
   one); new `set_summary` tool; `discover` renders identity→sessions; set/consume
   `reply_to`.
@@ -159,6 +166,6 @@ daemon, nothing handles a knock otherwise.
 1. **Random `session_id` + in-memory store + poll `key#session_id` only.**
    *Fixes the crash and the fan-out on its own* — ship first.
 2. Session-scoped signed announcement + roster grouping; `discover` renders
-   sessions; `set_summary`; register-on-use; graceful unregister.
+   sessions; `set_summary`; register-on-start; graceful unregister.
 3. `session` arg + auto-route-if-one; `reply_to` stickiness; the recovery behavior
    (queue-not-error; sleep-heal; re-pick).

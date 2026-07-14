@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.2]
+
+### Changed
+- **Sessions register on startup, not on first use.** A session now announces its
+  node + session to the roster the moment it boots (and unregisters on close), so it
+  is discoverable immediately. This replaces "register-on-use" (announce only on the
+  first `send_message` / `set_summary`), which made a fresh session invisible to
+  itself and created a standoff where two fresh sessions never saw each other. Node
+  registration is idempotent — every session under one identity announces the same
+  `pubkey`, the bus groups by it, and a re-announce is an upsert, so N sessions never
+  produce a duplicate node. Trade-off: every plugin-loaded session now appears on the
+  roster. `set_summary` now just *labels* an already-registered session.
+
 ## [0.5.1]
 
 ### Added — intra-node sessions
