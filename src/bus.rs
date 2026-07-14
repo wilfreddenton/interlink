@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
+use crate::route::Route;
 use crate::store::Store;
 
 pub const DEFAULT_RECV_TIMEOUT_MS: u64 = 25_000;
@@ -251,11 +252,8 @@ fn roster_key(body: &Value) -> Option<String> {
         .get("session")
         .and_then(|s| s.get("session_id"))
         .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-    Some(match session_id {
-        Some(sid) => format!("{pubkey}#{sid}"),
-        None => pubkey.to_string(),
-    })
+        .unwrap_or_default();
+    Some(Route::new(pubkey, session_id).to_string())
 }
 
 /// The announcement is stored verbatim under its per-session roster key.

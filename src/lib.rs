@@ -35,6 +35,8 @@ pub mod identity;
 #[cfg(feature = "agent")]
 pub mod policy;
 
+pub mod route;
+
 #[cfg(feature = "persist")]
 pub mod store;
 

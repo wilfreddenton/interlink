@@ -25,6 +25,7 @@ use interlink::identity::{
     mint_session_id,
 };
 use interlink::policy::Policy;
+use interlink::route::Route;
 use interlink::store::{Dir, LogRecord, Store};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -127,11 +128,11 @@ impl Inner {
     /// This session's own inbox route, `key#session_id` — the `reply_to` hint a
     /// peer uses to answer the exact session.
     fn my_route(&self) -> String {
-        format!(
-            "{}#{}",
+        Route::new(
             self.key.id().to_b64(),
-            self.session.read().unwrap().session_id
+            &self.session.read().unwrap().session_id,
         )
+        .to_string()
     }
 
     /// Persist an outbound message durably: log it, enqueue to the outbox, wake the
@@ -396,7 +397,7 @@ impl Agent {
         );
         // Unsigned routing hint so the peer's reply returns to this exact session.
         msg.reply_to = Some(self.inner.my_route());
-        let to_key = format!("{}#{session_id}", to.to_b64());
+        let to_key = Route::new(to.to_b64(), &session_id).to_string();
         let dest = format!("{} ({session_id})", args.to);
         self.inner
             .queue_outbound(to_key, &args.to, args.text.clone(), msg)
@@ -459,7 +460,7 @@ impl Agent {
             None,
         );
         msg.reply_to = Some(self.inner.my_route());
-        let to_key = format!("{}#{session_id}", to.to_b64());
+        let to_key = Route::new(to.to_b64(), &session_id).to_string();
         let msg_id = self
             .inner
             .queue_outbound(
@@ -921,7 +922,7 @@ impl Agent {
                 if ann.verify().is_err() {
                     continue;
                 }
-                if seen.insert(format!("{}#{}", ann.pubkey, ann.session.session_id)) {
+                if seen.insert(Route::new(&ann.pubkey, &ann.session.session_id).to_string()) {
                     out.push(ann);
                 }
             }
@@ -1178,16 +1179,16 @@ async fn inbound_loop(
 
         // Loopback guard: never deliver a message from our own session to itself.
         // The send path already refuses to originate one; this is the backstop.
-        if msg.from == me.to_b64()
-            && msg
-                .reply_to
-                .as_deref()
-                .and_then(|r| r.rsplit_once('#'))
-                .map(|(_, s)| s)
-                == Some(me_b64.rsplit_once('#').map(|(_, s)| s).unwrap_or(""))
-        {
-            ack_message(&inner.http, &url, &me_b64, ack.as_deref()).await;
-            continue;
+        if msg.from == me.to_b64() {
+            let sender = msg.reply_to.as_deref().map(Route::parse);
+            let mine = Route::parse(&me_b64);
+            if let Some(sender) = sender
+                && sender.session.is_some()
+                && sender.session == mine.session
+            {
+                ack_message(&inner.http, &url, &me_b64, ack.as_deref()).await;
+                continue;
+            }
         }
 
         let verdict = {
@@ -1210,14 +1211,11 @@ async fn inbound_loop(
                 if let Some(sid) = msg
                     .reply_to
                     .as_deref()
-                    .and_then(|r| r.strip_prefix(&format!("{}#", msg.from)))
-                    .filter(|s| !s.is_empty())
+                    .map(Route::parse)
+                    .filter(|r| r.key == msg.from)
+                    .and_then(|r| r.session)
                 {
-                    inner
-                        .sticky
-                        .write()
-                        .unwrap()
-                        .insert(msg.from.clone(), sid.to_string());
+                    inner.sticky.write().unwrap().insert(msg.from.clone(), sid);
                 }
                 // Progress marker: an inbound task request (task_id + no status)
                 // makes us the executor; a canceled for it clears the marker.
@@ -1596,7 +1594,7 @@ async fn main() -> Result<()> {
     // message, including a pairing knock, lands on exactly one live session, so
     // there is no shared mailbox and no fan-out. The signed `to` is still the bare
     // key, so the trust gate is untouched.
-    let me_route = format!("{}#{}", key.id().to_b64(), session.session_id);
+    let me_route = Route::new(key.id().to_b64(), &session.session_id).to_string();
     // Roster name defaults to the fingerprint — always something to show.
     let node_name = args
         .name
