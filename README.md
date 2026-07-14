@@ -179,16 +179,7 @@ A short tour of the trust model over the real binaries: a signed message from an
 allowlisted peer is delivered, and a stranger's — signed, but by an unknown key —
 is dropped before it can reach the model.
 
-## Verified, not asserted
-
-The [`experiments/`](experiments) harnesses drive a real, interactive Claude
-session through a PTY (channels need a TTY, so `claude -p` can't test them) and
-confirm the thing end to end:
-
-- **inline** — alice ↔ bob round-trip, signed, both directions;
-- **rejection** — a stranger's message is dropped, never pushed;
-- **durable delivery** — a message sent while the bus is down is queued and
-  delivered once the bus returns, surviving a restart of the **bus**.
+## Durability
 
 The **bus** is the durable layer: it keeps a message for an offline recipient until
 acked, over a pure-Rust ACID store ([redb](https://crates.io/crates/redb)), so a bus

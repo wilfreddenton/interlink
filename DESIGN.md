@@ -12,8 +12,7 @@ letting a human decide who's admitted — over a bus that verifies nothing.
 ## How we got here (and what it rules out)
 
 The runtime shapes the design, and the docs were wrong or silent on several
-points, so the facts below were established by experiment (see
-[`experiments/`](experiments)):
+points, so the facts below were established empirically against a real session:
 
 - **A Claude Code agent isn't a persistent process** — it exists only during a
   turn. So a peer's message has to be *pushed in* from outside; the agent can't
@@ -21,12 +20,9 @@ points, so the facts below were established by experiment (see
 - **Claude Code channels do exactly that push** (`notifications/claude/channel`).
   Before finding them, an earlier version reproduced the mechanism by hand with a
   Stop hook that kept a background long-poll re-armed — it worked, but channels
-  are the supported path, so it was retired to
-  [`contrib/stop-hook.sh`](contrib/stop-hook.sh) as the fallback for environments
-  where channels can't run (Bedrock/Vertex/Foundry, or orgs without them).
+  are the supported path, so it was retired.
 - **Channels only arm with an interactive TTY**; headless `claude -p` connects
-  the MCP server but never engages the channel subsystem. The integration tests
-  drive a real session through a PTY for this reason.
+  the MCP server but never engages the channel subsystem.
 - **`rmcp` can be a channel**: declare `experimental: {"claude/channel": {}}` and
   push `CustomNotification::new("notifications/claude/channel", …)`. Verified on
   the wire, so the project stays pure Rust.
