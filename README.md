@@ -118,7 +118,6 @@ claude mcp add --scope user --transport stdio interlink \
   -e INTERLINK_KEY=$HOME/.config/interlink/id.key \
   -e INTERLINK_PEERS=$HOME/.config/interlink/peers.json \
   -e INTERLINK_URL=http://127.0.0.1:9440 \
-  -e INTERLINK_AGENT_DB=$HOME/.local/state/interlink/agent.redb \
   -- interlink-mcp
 ```
 

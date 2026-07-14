@@ -63,9 +63,9 @@ struct Args {
         default_value = "http://127.0.0.1:9440"
     )]
     url: Vec<String>,
-    /// This agent's own local store (a SEPARATE file from the bus's `--db`).
-    /// Holds the durable outbound queue and the conversation log. Omit for an
-    /// in-memory store: outbound retries and history won't survive a restart.
+    /// Ignored: the agent store is always in-memory now (the bus is the durable
+    /// layer), so multiple sessions per machine don't collide on one redb file.
+    /// Still accepted for backward compatibility with existing `.mcp.json` files.
     #[arg(long, env = "INTERLINK_AGENT_DB")]
     db: Option<PathBuf>,
     /// Optional inbox label for this session. Several sessions can share one
@@ -1206,16 +1206,21 @@ async fn main() -> Result<()> {
             .with_context(|| format!("reading {}", args.key.display()))?,
     )?;
     let policy = Policy::load(&args.peers)?;
-    let store = match &args.db {
-        Some(path) => {
-            tracing::info!(db = %path.display(), "durable outbox + log");
-            Store::on_disk(path)?
-        }
-        None => {
-            tracing::warn!("no --db: in-memory outbox + log, lost on restart");
-            Store::in_memory()?
-        }
-    };
+    // The agent store is always in-memory. Every Claude Code session spawns its
+    // own interlink-mcp, and a shared on-disk redb (single-writer) makes the second
+    // one fail to open it and crash on startup — leaving that session with no tools.
+    // In-memory gives each session an isolated store: no collision, no cleanup, and
+    // it survives sleep (the process freezes with RAM intact). The **bus** is the
+    // durable layer — a message that reached it stays keep-until-ack durable for an
+    // offline recipient; only an unsent outbox message is lost on a hard restart
+    // (and even that survives sleep).
+    if args.db.is_some() {
+        tracing::warn!(
+            "INTERLINK_AGENT_DB is ignored: the agent store is always in-memory \
+             (the bus is the durable layer); safe with multiple sessions per machine"
+        );
+    }
+    let store = Store::in_memory()?;
     // The bus routing address: the bare key, or `key#label` for a labeled inbox.
     let me_route = match args.label.as_deref() {
         Some(l) if !l.trim().is_empty() => format!("{}#{l}", key.id().to_b64()),

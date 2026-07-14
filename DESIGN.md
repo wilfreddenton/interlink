@@ -96,13 +96,19 @@ it, and the queue lives in a pure-Rust ACID store
 ([redb](https://crates.io/crates/redb)), so a bus restart (a laptop that sleeps or
 reboots) loses nothing queued for an offline agent. Delivery is at-least-once — a
 crash between delivery and ack redelivers — which is safe because the receiver
-dedupes by `msg_id`. The same store, in a **separate file** on the agent side,
-backs a durable *outbox*: a `send_message` issued while the bus is unreachable is
-held and retried by a background sender until accepted, so neither a bus nor an
-agent restart drops a message. redb is the single seam — one synchronous API
-wrapped in `spawn_blocking` — chosen over SQLite (C) and Turso (whose SDK still
-pulls C via `bindgen`, and which had an open silent-data-loss bug). An in-memory
-backend gives the same code path when no db file is configured.
+dedupes by `msg_id`. redb is the single seam — one synchronous API wrapped in
+`spawn_blocking` — chosen over SQLite (C) and Turso (whose SDK still pulls C via
+`bindgen`, and which had an open silent-data-loss bug).
+
+**The agent store is always in-memory.** interlink installs as a user-scope plugin,
+so every Claude Code session on a machine spawns its own `interlink-mcp`; a shared
+on-disk redb is single-writer, so the second session would fail to open it and boot
+with no tools. Each session therefore keeps its outbox + log in RAM — isolated, so
+no collision and no cleanup, and it survives sleep (suspend freezes the process with
+RAM intact). The **bus is the durable layer**: a message that reached it stays
+keep-until-ack durable for an offline recipient. The only loss window is an outbox
+message queued *while the bus itself was unreachable*, dropped on a hard restart —
+and even that survives sleep. (`INTERLINK_AGENT_DB` is still accepted but ignored.)
 
 ## No TLS, on purpose
 

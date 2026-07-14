@@ -6,8 +6,7 @@
       "env": {
         "INTERLINK_KEY": "${HOME}/.config/interlink/id.key",
         "INTERLINK_PEERS": "${HOME}/.config/interlink/peers.json",
-        "INTERLINK_URL": "${INTERLINK_URL:-http://127.0.0.1:9440}",
-        "INTERLINK_AGENT_DB": "${HOME}/.local/state/interlink/agent.redb"
+        "INTERLINK_URL": "${INTERLINK_URL:-http://127.0.0.1:9440}"
       }
     }
   }

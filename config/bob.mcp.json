@@ -6,8 +6,7 @@
       "env": {
         "INTERLINK_KEY": "${HOME}/.config/interlink/bob.key",
         "INTERLINK_PEERS": "${HOME}/.config/interlink/bob-peers.json",
-        "INTERLINK_URL": "http://127.0.0.1:9440",
-        "INTERLINK_AGENT_DB": "${HOME}/.local/state/interlink/bob-agent.redb"
+        "INTERLINK_URL": "http://127.0.0.1:9440"
       }
     }
   }

@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.2]
+
+### Fixed
+- **Second session no longer boots with no tools.** interlink installs as a
+  user-scope plugin, so every Claude Code session spawns its own `interlink-mcp`.
+  They all pointed at one on-disk `agent.redb`, and redb is single-writer — so the
+  second session (or an orphaned server) failed to open it and started with **zero
+  tools**. The agent store is now **always in-memory**: each session gets an isolated
+  outbox + log, so there's no collision and no file to orphan, and it survives sleep
+  (suspend freezes the process with RAM intact). The **bus stays the durable layer**
+  — a message that reached it is still keep-until-ack durable for an offline
+  recipient. `INTERLINK_AGENT_DB` is still accepted for compatibility but ignored
+  (logged once at startup); the plugin and config templates no longer set it.
+  Wire-compatible with 0.4.x (no protocol change).
+
 ## [0.4.1]
 
 ### Added
