@@ -10,7 +10,7 @@
 //! pair, surfaced as a bounded, metadata-only notice.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -18,7 +18,8 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use interlink::agent::{Dedupe, Dispatch, PairTable, decide};
 use interlink::identity::{
-    AgentId, AgentKey, Announcement, MessageKind, SignedMessage, TaskStatus,
+    AgentId, AgentKey, Announcement, MessageKind, SessionInfo, SignedMessage, TaskStatus,
+    mint_session_id,
 };
 use interlink::policy::Policy;
 use interlink::store::{Dir, LogRecord, Store};
@@ -107,6 +108,9 @@ struct Inner {
     outbox: Arc<Notify>,
     /// Friendly name this node announces to the roster for discovery.
     name: String,
+    /// This live session's descriptor. `session_id` is fixed at startup; `summary`
+    /// is mutable via `set_summary`, so the whole thing sits behind a lock.
+    session: RwLock<SessionInfo>,
     /// Inbound knocks awaiting the operator's accept/reject: sender key → name.
     pending_in: Mutex<PairTable>,
     /// Our outstanding pair requests: target key → the name we knocked (so an
@@ -1104,12 +1108,35 @@ fn add_authorized_peer(inner: &Inner, petname: &str, key_b64: &str) -> Result<()
     Ok(())
 }
 
+/// The basename of the nearest ancestor directory containing a `.git`, or empty if
+/// none — a human-friendly repo label for `discover` (e.g. `~/eden` → `eden`).
+fn detect_git_root(cwd: &str) -> String {
+    let mut dir = Path::new(cwd);
+    loop {
+        if dir.join(".git").exists() {
+            return dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => return String::new(),
+        }
+    }
+}
+
 /// Periodically publish this node's signed presence to every relay, so it appears
 /// in peers' `discover`. The heartbeat is shorter than the roster TTL, so a live
 /// node never expires from the roster.
 async fn announce_loop(inner: Arc<Inner>) {
     loop {
-        let ann = inner.key.announce(&inner.name, interlink::now_ms());
+        let ann = {
+            let session = inner.session.read().unwrap();
+            inner
+                .key
+                .announce(&inner.name, &session, interlink::now_ms())
+        };
         for url in &inner.urls {
             let _ = inner
                 .http
@@ -1221,6 +1248,21 @@ async fn main() -> Result<()> {
         );
     }
     let store = Store::in_memory()?;
+
+    // This live session's identity under the node key. Random id (collision-free
+    // across sessions in the same directory); cwd + git repo are how a human
+    // recognizes it in `discover`. Summary is empty until `set_summary`.
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let session = SessionInfo {
+        session_id: mint_session_id()?,
+        git_root: detect_git_root(&cwd),
+        cwd,
+        summary: String::new(),
+    };
+
     // The bus routing address: the bare key, or `key#label` for a labeled inbox.
     let me_route = match args.label.as_deref() {
         Some(l) if !l.trim().is_empty() => format!("{}#{l}", key.id().to_b64()),
@@ -1261,6 +1303,7 @@ async fn main() -> Result<()> {
         store,
         outbox: Arc::new(Notify::new()),
         name: node_name,
+        session: RwLock::new(session),
         pending_in: Mutex::new(PairTable::new(PAIR_CAP)),
         pending_out: Mutex::new(PairTable::new(PAIR_CAP)),
     });

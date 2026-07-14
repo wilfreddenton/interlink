@@ -210,16 +210,44 @@ impl AgentKey {
         }
     }
 
-    /// Sign a presence announcement: "this key is online, calling itself `name`".
-    pub fn announce(&self, name: &str, ts: u64) -> Announcement {
-        let sig: Signature = self.0.sign(&announce_canonical(self.id(), name, ts));
+    /// Sign a presence announcement: "this key is online, calling itself `name`,
+    /// as this live session". The session descriptor is signed too, so a peer can
+    /// trust the cwd/repo/summary it picks from as much as the key.
+    pub fn announce(&self, name: &str, session: &SessionInfo, ts: u64) -> Announcement {
+        let sig: Signature = self
+            .0
+            .sign(&announce_canonical(self.id(), name, session, ts));
         Announcement {
             pubkey: self.id().to_b64(),
             name: name.to_string(),
+            session: session.clone(),
             ts,
             sig: B64.encode(sig.to_bytes()),
         }
     }
+}
+
+/// A live session under a node identity: a random per-launch `session_id` plus the
+/// descriptor a human recognizes it by. One identity hosts several at once; the id
+/// is pure routing (`key#session_id`), the rest is for `discover`'s pick-list.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub session_id: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub git_root: String,
+    #[serde(default)]
+    pub summary: String,
+}
+
+/// A fresh random session id (8 lowercase hex chars). Random — not derived from
+/// metadata — so two sessions in the same directory never collide; the id is only
+/// a routing key, never shown to humans.
+pub fn mint_session_id() -> Result<String> {
+    let mut b = [0u8; 4];
+    getrandom::fill(&mut b).map_err(|e| anyhow!("OS entropy unavailable: {e}"))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// What travels over the bus. The bus treats it as an opaque payload.
@@ -330,6 +358,8 @@ const ANNOUNCE_DOMAIN: &[u8] = b"interlink-announce-v1\0";
 pub struct Announcement {
     pub pubkey: String,
     pub name: String,
+    #[serde(default)]
+    pub session: SessionInfo,
     pub ts: u64,
     pub sig: String,
 }
@@ -346,18 +376,31 @@ impl Announcement {
             .map_err(|_| anyhow!("signature must be {SIGNATURE_LENGTH} bytes"))?;
         let sig = Signature::from_bytes(&sig_bytes);
         id.as_verifying_key()
-            .verify_strict(&announce_canonical(id, &self.name, self.ts), &sig)
+            .verify_strict(
+                &announce_canonical(id, &self.name, &self.session, self.ts),
+                &sig,
+            )
             .map_err(|_| anyhow!("announcement does not verify for {}", id.fingerprint()))?;
         Ok(id)
     }
 }
 
-fn announce_canonical(pubkey: AgentId, name: &str, ts: u64) -> Vec<u8> {
-    let mut b = Vec::with_capacity(ANNOUNCE_DOMAIN.len() + 40 + name.len());
+fn announce_canonical(pubkey: AgentId, name: &str, session: &SessionInfo, ts: u64) -> Vec<u8> {
+    let mut b = Vec::with_capacity(ANNOUNCE_DOMAIN.len() + 64 + name.len());
     b.extend_from_slice(ANNOUNCE_DOMAIN);
     b.extend_from_slice(pubkey.as_verifying_key().as_bytes());
-    b.extend_from_slice(&(name.len() as u32).to_le_bytes());
-    b.extend_from_slice(name.as_bytes());
+    // Length-prefix every variable field so no two distinct (name, session)
+    // tuples can share an encoding.
+    for field in [
+        name,
+        &session.session_id,
+        &session.cwd,
+        &session.git_root,
+        &session.summary,
+    ] {
+        b.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        b.extend_from_slice(field.as_bytes());
+    }
     b.extend_from_slice(&ts.to_le_bytes());
     b
 }
@@ -498,12 +541,29 @@ mod tests {
     #[test]
     fn announcement_round_trips_and_rejects_tampering() {
         let alice = key();
-        let a = alice.announce("alice-laptop", 1234);
+        let session = SessionInfo {
+            session_id: "a3f2c1".into(),
+            cwd: "/home/alice/eden".into(),
+            git_root: "eden".into(),
+            summary: "installing deps".into(),
+        };
+        let a = alice.announce("alice-laptop", &session, 1234);
         assert_eq!(a.verify().unwrap(), alice.id());
 
         let mut tampered_name = a.clone();
         tampered_name.name = "eve-laptop".into();
         assert!(tampered_name.verify().is_err(), "name is signed");
+
+        let mut tampered_session = a.clone();
+        tampered_session.session.summary = "rm -rf /".into();
+        assert!(
+            tampered_session.verify().is_err(),
+            "the session descriptor is signed"
+        );
+
+        let mut swapped_id = a.clone();
+        swapped_id.session.session_id = "deadbeef".into();
+        assert!(swapped_id.verify().is_err(), "session_id is signed");
 
         let mut forged_key = a;
         forged_key.pubkey = key().id().to_b64();
