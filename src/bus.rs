@@ -47,9 +47,11 @@ pub struct Broker {
     /// Per-recipient wakeups for the long-poll. In-memory and rebuildable — the
     /// durable state is entirely in the store.
     notifies: Arc<DashMap<String, Arc<Notify>>>,
-    /// Presence roster: pubkey → (opaque signed announcement, received-at ms).
-    /// In-memory and ephemeral — the bus stores and serves it but never verifies
-    /// it; clients check the signatures. Just a bulletin board.
+    /// Presence roster: `pubkey#session_id` → (opaque signed announcement,
+    /// received-at ms). Keyed per *session* so several live sessions under one
+    /// identity coexist instead of overwriting each other; clients group by the
+    /// announcement's `pubkey`. In-memory and ephemeral — the bus stores and serves
+    /// it but never verifies it; clients check the signatures. Just a bulletin board.
     roster: Arc<DashMap<String, (Value, u64)>>,
     cap: usize,
 }
@@ -64,16 +66,25 @@ impl Broker {
         }
     }
 
-    /// Record a presence announcement, keyed by its self-declared pubkey. Prunes
-    /// expired entries; the announcement is stored verbatim (the bus never
-    /// inspects it beyond the routing key).
-    pub fn announce(&self, pubkey: String, announcement: Value, now: u64) {
+    /// Record a presence announcement under a per-session key (`pubkey#session_id`,
+    /// or a bare `pubkey` for a sessionless legacy announcement). Prunes expired
+    /// entries; the announcement is stored verbatim (the bus never inspects it
+    /// beyond the routing key).
+    pub fn announce(&self, key: String, announcement: Value, now: u64) {
         self.roster
             .retain(|_, (_, at)| now.saturating_sub(*at) < ROSTER_TTL_MS);
-        if self.roster.len() >= ROSTER_CAP && !self.roster.contains_key(&pubkey) {
+        if self.roster.len() >= ROSTER_CAP && !self.roster.contains_key(&key) {
             return; // full of live entries; drop the newcomer rather than evict
         }
-        self.roster.insert(pubkey, (announcement, now));
+        self.roster.insert(key, (announcement, now));
+    }
+
+    /// Immediately drop a session's presence (a graceful close), so a peer learns
+    /// it's really gone rather than waiting out the TTL. Unsigned and best-effort:
+    /// the bus verifies nothing, and a still-live session simply re-announces on its
+    /// next heartbeat, so a spurious unregister is self-healing.
+    pub fn unregister(&self, key: &str) {
+        self.roster.remove(key);
     }
 
     /// The live (non-expired) announcements.
@@ -151,6 +162,7 @@ impl Broker {
             .route("/recv", get(recv_handler))
             .route("/ack", post(ack_handler))
             .route("/announce", post(announce_handler))
+            .route("/unregister", post(unregister_handler))
             .route("/roster", get(roster_handler))
             .with_state(self)
     }
@@ -230,17 +242,38 @@ async fn ack_handler(State(broker): State<Broker>, Json(body): Json<AckBody>) ->
     }
 }
 
-/// The announcement is stored verbatim, keyed by the `pubkey` it self-declares —
-/// the only field the bus reads. Everything else (name, ts, sig) is opaque to it.
-async fn announce_handler(State(broker): State<Broker>, Json(body): Json<Value>) -> StatusCode {
-    let Some(pubkey) = body
-        .get("pubkey")
+/// The roster key: `pubkey#session_id`, or a bare `pubkey` when the announcement
+/// carries no session (a legacy node). The pubkey is the only field the bus needs
+/// to read; the rest (name, session, ts, sig) is opaque to it.
+fn roster_key(body: &Value) -> Option<String> {
+    let pubkey = body.get("pubkey").and_then(|v| v.as_str())?;
+    let session_id = body
+        .get("session")
+        .and_then(|s| s.get("session_id"))
         .and_then(|v| v.as_str())
-        .map(str::to_string)
-    else {
+        .filter(|s| !s.is_empty());
+    Some(match session_id {
+        Some(sid) => format!("{pubkey}#{sid}"),
+        None => pubkey.to_string(),
+    })
+}
+
+/// The announcement is stored verbatim under its per-session roster key.
+async fn announce_handler(State(broker): State<Broker>, Json(body): Json<Value>) -> StatusCode {
+    let Some(key) = roster_key(&body) else {
         return StatusCode::BAD_REQUEST;
     };
-    broker.announce(pubkey, body, crate::now_ms());
+    broker.announce(key, body, crate::now_ms());
+    StatusCode::ACCEPTED
+}
+
+/// Graceful presence removal. Takes the same `{ pubkey, session }` shape as an
+/// announcement (the sig is ignored — see [`Broker::unregister`]).
+async fn unregister_handler(State(broker): State<Broker>, Json(body): Json<Value>) -> StatusCode {
+    let Some(key) = roster_key(&body) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    broker.unregister(&key);
     StatusCode::ACCEPTED
 }
 
@@ -378,5 +411,46 @@ mod tests {
         let r = b.roster(2_000);
         assert_eq!(r.len(), 1, "same pubkey replaces, not appends");
         assert_eq!(r[0]["name"], "new");
+    }
+
+    #[test]
+    fn roster_key_scopes_by_session() {
+        let s1 = json!({"pubkey":"keyA","session":{"session_id":"aa11"}});
+        let s2 = json!({"pubkey":"keyA","session":{"session_id":"bb22"}});
+        assert_eq!(roster_key(&s1).unwrap(), "keyA#aa11");
+        assert_ne!(
+            roster_key(&s1),
+            roster_key(&s2),
+            "distinct sessions distinct"
+        );
+        // Legacy / sessionless announcement falls back to the bare pubkey.
+        assert_eq!(roster_key(&json!({"pubkey":"keyA"})).unwrap(), "keyA");
+        assert!(
+            roster_key(&json!({"name":"x"})).is_none(),
+            "pubkey required"
+        );
+    }
+
+    #[test]
+    fn two_sessions_under_one_identity_coexist() {
+        let b = broker(8);
+        let s1 = json!({"pubkey":"keyA","session":{"session_id":"aa11"}});
+        let s2 = json!({"pubkey":"keyA","session":{"session_id":"bb22"}});
+        b.announce(roster_key(&s1).unwrap(), s1, 1_000);
+        b.announce(roster_key(&s2).unwrap(), s2, 1_000);
+        assert_eq!(b.roster(1_000).len(), 2, "same identity, two live sessions");
+    }
+
+    #[test]
+    fn unregister_removes_one_session_immediately() {
+        let b = broker(8);
+        let s1 = json!({"pubkey":"keyA","session":{"session_id":"aa11"}});
+        let s2 = json!({"pubkey":"keyA","session":{"session_id":"bb22"}});
+        b.announce(roster_key(&s1).unwrap(), s1.clone(), 1_000);
+        b.announce(roster_key(&s2).unwrap(), s2, 1_000);
+        b.unregister(&roster_key(&s1).unwrap());
+        let r = b.roster(1_000);
+        assert_eq!(r.len(), 1, "only the unregistered session is gone");
+        assert_eq!(r[0]["session"]["session_id"], "bb22");
     }
 }

@@ -11,8 +11,11 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -69,12 +72,6 @@ struct Args {
     /// Still accepted for backward compatibility with existing `.mcp.json` files.
     #[arg(long, env = "INTERLINK_AGENT_DB")]
     db: Option<PathBuf>,
-    /// Optional inbox label for this session. Several sessions can share one
-    /// identity: each launches with a distinct label and receives only messages
-    /// a peer addresses to it (`send_message`'s `channel`). Omit for the default
-    /// inbox. The label routes on the bus only — identity is still the key.
-    #[arg(long, env = "INTERLINK_LABEL")]
-    label: Option<String>,
     /// Friendly name announced to the bus roster for discovery (default: this
     /// key's fingerprint). A self-claim — peers verify the key, not the name.
     #[arg(long, env = "INTERLINK_NAME")]
@@ -111,6 +108,10 @@ struct Inner {
     /// This live session's descriptor. `session_id` is fixed at startup; `summary`
     /// is mutable via `set_summary`, so the whole thing sits behind a lock.
     session: RwLock<SessionInfo>,
+    /// Register-on-use gate: a plain chat that never does interlink work stays out
+    /// of everyone's `discover` pick-list. Set on the first `send_message` or
+    /// `set_summary`; until then the heartbeat announces nothing.
+    engaged: AtomicBool,
     /// Inbound knocks awaiting the operator's accept/reject: sender key → name.
     pending_in: Mutex<PairTable>,
     /// Our outstanding pair requests: target key → the name we knocked (so an
@@ -164,9 +165,10 @@ struct SendArgs {
     to: String,
     /// The message text.
     text: String,
-    /// Optional label to reach a specific named session on the recipient (one it
-    /// was launched with, e.g. "work"). Omit for the recipient's default inbox.
-    channel: Option<String>,
+    /// Which of the recipient's live sessions to reach, by its `session_id` from
+    /// `discover`. Omit when the peer has exactly one live session (auto-routed); if
+    /// it has several and you omit this, the call returns the list to pick from.
+    session: Option<String>,
     /// Optional task id correlating a multi-message delegation. The requester
     /// picks a short id on the opening message; every update/question/result about
     /// that task echoes the same id.
@@ -179,6 +181,14 @@ struct SendArgs {
     /// Optional msg_id this message answers — links an answer to the "needs_input"
     /// question it resolves.
     in_reply_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SetSummaryArgs {
+    /// A short, human-readable description of what this session is doing (e.g.
+    /// "installing Hunyuan3D deps"), shown to peers in `discover` so they can pick
+    /// the right session to reach.
+    summary: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -282,10 +292,19 @@ impl Agent {
             })?),
             _ => None,
         };
-        // The signature always binds the bare recipient key; the label is only a
-        // bus-routing suffix (`key#label`), so the trust gate is untouched and a
-        // relay could at worst misroute among the recipient's own inboxes. The
-        // task fields are signed too, so a relay can't tamper with them.
+        // Pick which of the recipient's live sessions to reach. Explicit wins;
+        // otherwise auto-route if there's exactly one, and refuse (with the list)
+        // if there are several or none — we can't guess an inbox.
+        let session_id = match args.session.as_deref().map(str::trim) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => self.route_session(to, &args.to).await?,
+        };
+        // Sending is interlink work — announce this session so the peer can reach
+        // back. The signature always binds the bare recipient key; `#session_id` is
+        // only a bus-routing suffix, so the trust gate is untouched and a relay
+        // could at worst misroute among the recipient's own sessions. The task
+        // fields are signed too, so a relay can't tamper with them.
+        engage(&self.inner).await;
         let msg = self.inner.key.sign_full(
             to,
             &args.text,
@@ -296,20 +315,14 @@ impl Agent {
             status,
             args.in_reply_to.as_deref(),
         );
-        let to_key = match args.channel.as_deref() {
-            Some(c) if !c.trim().is_empty() => format!("{}#{c}", to.to_b64()),
-            _ => to.to_b64(),
-        };
+        let to_key = format!("{}#{session_id}", to.to_b64());
         let job = OutboundJob {
             to_key,
             peer: args.to.clone(),
             msg_id: msg_id.clone(),
             msg,
         };
-        let dest = match args.channel.as_deref() {
-            Some(c) if !c.trim().is_empty() => format!("{} #{c}", args.to),
-            _ => args.to.clone(),
-        };
+        let dest = format!("{} ({session_id})", args.to);
         let bytes = serde_json::to_vec(&job)
             .map_err(|e| McpError::internal_error(format!("encoding message: {e}"), None))?;
         // Record before enqueuing so history reflects the message even if we
@@ -494,15 +507,19 @@ impl Agent {
     }
 
     #[tool(
-        description = "List nodes currently announced on the bus roster (name, key \
-                       fingerprint), marking which are already peers. Identity is the key — a \
-                       name is only a self-claim, so verify the fingerprint before pairing."
+        description = "List nodes currently announced on the bus roster, grouped by identity, each \
+                       with its live sessions (session_id · cwd · git repo · summary) — the \
+                       session_id is what you pass to send_message. Marks which are already peers. \
+                       Identity is the key — a name is only a self-claim, so verify the fingerprint \
+                       before pairing."
     )]
     async fn discover(&self) -> Result<CallToolResult, McpError> {
         let me = self.inner.key.id().to_b64();
-        // Verified, deduped-by-key nodes across every relay.
-        let mut nodes: Vec<(String, String)> = Vec::new();
-        let mut seen = HashSet::new();
+        // Verified announcements grouped by identity → its live sessions. Insertion
+        // order preserved; sessions deduped by id.
+        let mut order: Vec<String> = Vec::new();
+        let mut by_key: HashMap<String, (String, Vec<SessionInfo>)> = HashMap::new();
+        let mut seen_session = HashSet::new();
         for url in &self.inner.urls {
             let Some(roster) = fetch_roster(&self.inner.http, url).await else {
                 continue;
@@ -515,18 +532,25 @@ impl Agent {
                 // verifies; identity is the key it authenticates.
                 let Ok(id) = ann.verify() else { continue };
                 let pk = id.to_b64();
-                if seen.insert(pk.clone()) {
-                    nodes.push((pk, ann.name));
+                let entry = by_key.entry(pk.clone()).or_insert_with(|| {
+                    order.push(pk.clone());
+                    (ann.name.clone(), Vec::new())
+                });
+                if !ann.session.session_id.is_empty()
+                    && seen_session.insert(format!("{pk}#{}", ann.session.session_id))
+                {
+                    entry.1.push(ann.session);
                 }
             }
         }
         let mut name_counts: HashMap<&str, usize> = HashMap::new();
-        for (_, name) in &nodes {
-            *name_counts.entry(name.as_str()).or_default() += 1;
+        for pk in &order {
+            *name_counts.entry(by_key[pk].0.as_str()).or_default() += 1;
         }
         let policy = self.inner.policy.read().unwrap();
-        let mut lines = Vec::new();
-        for (pk, name) in &nodes {
+        let mut blocks = Vec::new();
+        for pk in &order {
+            let (name, sessions) = &by_key[pk];
             let fp: String = pk.chars().take(8).collect();
             let mut tags = Vec::new();
             if *pk == me {
@@ -546,14 +570,42 @@ impl Agent {
             } else {
                 format!("  [{}]", tags.join(", "))
             };
-            lines.push(format!("{name} ({fp}…){tagstr}\n    key: {pk}"));
+            let mut block = format!("{name} ({fp}…){tagstr}\n    key: {pk}");
+            for s in sessions {
+                block.push_str(&format!("\n    → {}", session_line(s)));
+            }
+            blocks.push(block);
         }
-        let body = if lines.is_empty() {
+        let body = if blocks.is_empty() {
             "no nodes announced on the bus roster".to_string()
         } else {
-            lines.join("\n")
+            blocks.join("\n")
         };
         Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
+    }
+
+    #[tool(
+        description = "Set this session's summary — a short line describing what you're working on \
+                       — so peers can recognize and pick this session in discover. Also registers \
+                       this session on the roster (a plain chat that never sends or sets a summary \
+                       stays invisible to peers). cwd and git repo are filled automatically."
+    )]
+    async fn set_summary(
+        &self,
+        Parameters(args): Parameters<SetSummaryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (session_id, summary) = {
+            let mut session = self.inner.session.write().unwrap();
+            session.summary = args.summary.trim().to_string();
+            (session.session_id.clone(), session.summary.clone())
+        };
+        // Announce right away (and mark engaged) so the new summary shows without
+        // waiting for the next heartbeat.
+        self.inner.engaged.store(true, Ordering::SeqCst);
+        announce_now(&self.inner).await;
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+            "session {session_id} summary set: \"{summary}\""
+        ))]))
     }
 
     #[tool(
@@ -777,6 +829,58 @@ impl Agent {
             1 => Ok(by_name[0].0.clone()),
             0 => bail!("no node '{target}' on the roster (run discover to see who's online)"),
             _ => bail!("name '{target}' is shared by multiple keys — use the fingerprint"),
+        }
+    }
+
+    /// A peer's live sessions from the roster (signature-verified, deduped by
+    /// `session_id` across relays).
+    async fn peer_sessions(&self, peer: AgentId) -> Vec<SessionInfo> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for url in &self.inner.urls {
+            let Some(roster) = fetch_roster(&self.inner.http, url).await else {
+                continue;
+            };
+            for entry in roster {
+                let Ok(ann) = serde_json::from_value::<Announcement>(entry) else {
+                    continue;
+                };
+                let Ok(id) = ann.verify() else { continue };
+                if id == peer
+                    && !ann.session.session_id.is_empty()
+                    && seen.insert(ann.session.session_id.clone())
+                {
+                    out.push(ann.session);
+                }
+            }
+        }
+        out
+    }
+
+    /// Which session to send to when the caller gave none: exactly one live session
+    /// auto-routes; none or several is an error the model surfaces (with the list to
+    /// pick from), since we can't guess an inbox.
+    async fn route_session(&self, peer: AgentId, petname: &str) -> Result<String, McpError> {
+        let mut sessions = self.peer_sessions(peer).await;
+        match sessions.len() {
+            1 => Ok(sessions.pop().unwrap().session_id),
+            0 => Err(McpError::invalid_params(
+                format!(
+                    "no live session for '{petname}' on the roster — they may be offline (run discover)"
+                ),
+                None,
+            )),
+            _ => {
+                let list = sessions
+                    .iter()
+                    .map(|s| format!("  {}", session_line(s)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Err(McpError::invalid_params(
+                    format!("'{petname}' has several live sessions — pass session=<id>:\n{list}"),
+                    None,
+                ))
+            }
         }
     }
 }
@@ -1126,25 +1230,75 @@ fn detect_git_root(cwd: &str) -> String {
     }
 }
 
-/// Periodically publish this node's signed presence to every relay, so it appears
-/// in peers' `discover`. The heartbeat is shorter than the roster TTL, so a live
-/// node never expires from the roster.
+/// One human-readable line for a live session in `discover` / pick-lists, e.g.
+/// `a3f2c1 · ~/eden · git:eden · "installing deps"`.
+fn session_line(s: &SessionInfo) -> String {
+    let mut parts = vec![s.session_id.clone()];
+    if !s.cwd.is_empty() {
+        parts.push(s.cwd.clone());
+    }
+    if !s.git_root.is_empty() {
+        parts.push(format!("git:{}", s.git_root));
+    }
+    if !s.summary.is_empty() {
+        parts.push(format!("\"{}\"", s.summary));
+    }
+    parts.join(" · ")
+}
+
+/// Publish this session's signed presence to every relay, once. Best-effort.
+async fn announce_now(inner: &Arc<Inner>) {
+    let ann = {
+        let session = inner.session.read().unwrap();
+        inner
+            .key
+            .announce(&inner.name, &session, interlink::now_ms())
+    };
+    for url in &inner.urls {
+        let _ = inner
+            .http
+            .post(format!("{url}/announce"))
+            .json(&ann)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await;
+    }
+}
+
+/// Mark the session engaged (register-on-use) and announce immediately, so a peer
+/// sees it in `discover` without waiting for the next heartbeat. Idempotent.
+async fn engage(inner: &Arc<Inner>) {
+    if !inner.engaged.swap(true, Ordering::SeqCst) {
+        announce_now(inner).await;
+    }
+}
+
+/// Best-effort graceful presence removal on clean shutdown, so a peer learns the
+/// session is really gone (not just asleep) and re-picks right away.
+async fn unregister_now(inner: &Arc<Inner>) {
+    let body = {
+        let session = inner.session.read().unwrap();
+        json!({ "pubkey": inner.key.id().to_b64(), "session": &*session })
+    };
+    for url in &inner.urls {
+        let _ = inner
+            .http
+            .post(format!("{url}/unregister"))
+            .json(&body)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await;
+    }
+}
+
+/// Periodically republish this session's presence, so it appears in peers'
+/// `discover`. Gated on engagement (register-on-use): a plain chat that never does
+/// interlink work never announces. The heartbeat is shorter than the roster TTL, so
+/// a live, engaged session never expires.
 async fn announce_loop(inner: Arc<Inner>) {
     loop {
-        let ann = {
-            let session = inner.session.read().unwrap();
-            inner
-                .key
-                .announce(&inner.name, &session, interlink::now_ms())
-        };
-        for url in &inner.urls {
-            let _ = inner
-                .http
-                .post(format!("{url}/announce"))
-                .json(&ann)
-                .timeout(Duration::from_secs(10))
-                .send()
-                .await;
+        if inner.engaged.load(Ordering::SeqCst) {
+            announce_now(&inner).await;
         }
         tokio::time::sleep(Duration::from_secs(30)).await;
     }
@@ -1263,11 +1417,11 @@ async fn main() -> Result<()> {
         summary: String::new(),
     };
 
-    // The bus routing address: the bare key, or `key#label` for a labeled inbox.
-    let me_route = match args.label.as_deref() {
-        Some(l) if !l.trim().is_empty() => format!("{}#{l}", key.id().to_b64()),
-        _ => key.id().to_b64(),
-    };
+    // The bus routing address is this session's own inbox `key#session_id`: every
+    // message, including a pairing knock, lands on exactly one live session, so
+    // there is no shared mailbox and no fan-out. The signed `to` is still the bare
+    // key, so the trust gate is untouched.
+    let me_route = format!("{}#{}", key.id().to_b64(), session.session_id);
     // Roster name defaults to the fingerprint — always something to show.
     let node_name = args
         .name
@@ -1276,7 +1430,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| key.id().fingerprint());
     tracing::info!(
         me = %key.id().fingerprint(),
-        inbox = args.label.as_deref().unwrap_or("(default)"),
+        session = %session.session_id,
         peers = policy.len(),
         relays = args.url.len(),
         "agent starting"
@@ -1304,6 +1458,7 @@ async fn main() -> Result<()> {
         outbox: Arc::new(Notify::new()),
         name: node_name,
         session: RwLock::new(session),
+        engaged: AtomicBool::new(false),
         pending_in: Mutex::new(PairTable::new(PAIR_CAP)),
         pending_out: Mutex::new(PairTable::new(PAIR_CAP)),
     });
@@ -1331,6 +1486,32 @@ async fn main() -> Result<()> {
         ));
     }
 
-    service.waiting().await?;
+    // The service ends when Claude closes the session (stdin EOF) or on a signal.
+    // Either way, drop our presence so a peer learns the session is really gone and
+    // re-picks, rather than waiting out the roster TTL.
+    tokio::select! {
+        r = service.waiting() => { r?; }
+        _ = shutdown_signal() => { tracing::info!("shutdown signal; unregistering"); }
+    }
+    unregister_now(&inner).await;
     Ok(())
+}
+
+/// Resolves on SIGTERM (systemd/Claude teardown) or Ctrl-C.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => return std::future::pending().await,
+        };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
