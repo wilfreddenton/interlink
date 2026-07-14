@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.1]
+
+### Fixed — channel-less first-run was janky
+- **`interlink-mcp wait --session <id>` now parses.** `--session` lived on the
+  top-level args, so clap rejected it *after* the `wait` subcommand (exit 2) — the
+  model had to fall back to the `INTERLINK_SESSION` env var by trial and error. The
+  flag now belongs to the `wait` subcommand directly.
+- **The Stop hook no longer suggests a bare `interlink-mcp`.** Under `npx` the binary
+  isn't on `PATH`, so the hook's example command failed (exit 127) and the model had
+  to rediscover the right invocation. The hook now points only at the server's own
+  instructions, which give the exact command using the running binary's full path
+  (`current_exe`) — runnable verbatim, first try.
+
 ## [0.6.0]
 
 ### Added — works without Claude Code channels

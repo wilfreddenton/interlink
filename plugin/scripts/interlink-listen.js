@@ -42,20 +42,19 @@ process.stdin.on("end", () => {
   if (armed) process.exit(0); // listening — allow the stop
 
   // Not armed: block the stop and drive a re-arm. `decision: block` continues the
-  // turn so the model can spawn the task now, rather than parking deaf. The command
-  // is session-specific (`interlink-mcp wait --session <id>`) — the interlink MCP
-  // server prints the exact one in its instructions, so we point at that rather than
-  // guess an id here.
+  // turn so the model can spawn the task now, rather than parking deaf. We do NOT
+  // print a command here — the exact one is session-specific and uses the server's
+  // own binary path (not on PATH under npx), so we point at the server instructions.
   const reason =
     "You are in interlink's channel-less mode and have no inbox listener running, so " +
     "you would park without hearing incoming peer messages. Before you stop, arm this " +
-    "session's listener as a background task (Bash with run_in_background: true): run " +
-    "the exact `interlink-mcp wait --session <id>` command from the interlink MCP " +
-    "server's instructions (the id is specific to this session), or the same command " +
-    "you ran before. It blocks until a peer message arrives, prints it as an " +
-    "<interlink> block, and exits — which wakes you. When that happens, handle the " +
-    "message and re-arm the same command. If you have nothing else to do, just arm it " +
-    "and stop.";
+    "session's listener as a background task (Bash, run_in_background: true). The exact " +
+    "command is in the interlink MCP server's instructions (get_info) — it begins with " +
+    "the server's OWN binary path and ends with `wait --session <this-session-id>`. Run " +
+    "THAT command verbatim; do NOT guess a bare `interlink-mcp`, it is not on PATH. (If " +
+    "you already ran it once this session, re-run the same command.) It blocks until a " +
+    "peer message arrives, prints an <interlink> block, and exits — which wakes you. " +
+    "Then handle the message and re-arm the same command.";
 
   process.stdout.write(JSON.stringify({ decision: "block", reason }));
   process.exit(0);

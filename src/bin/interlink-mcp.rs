@@ -64,7 +64,15 @@ enum Command {
     /// session's local inbox, print it, and exit. Meant to be run as a background
     /// task and re-armed by the Stop hook, so a channel-less session is still woken
     /// by incoming messages.
-    Wait,
+    Wait(WaitArgs),
+}
+
+#[derive(clap::Args)]
+struct WaitArgs {
+    /// Which session's inbox to drain — the id from the interlink MCP server's
+    /// instructions. Also read from `INTERLINK_SESSION`.
+    #[arg(long, env = "INTERLINK_SESSION")]
+    session: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -94,10 +102,8 @@ struct Args {
     /// key's fingerprint). A self-claim — peers verify the key, not the name.
     #[arg(long, env = "INTERLINK_NAME")]
     name: Option<String>,
-    /// Fallback-mode session name — a stable inbox id (`key#<session>`) so a peer
-    /// reaches this listener across restarts, and the `wait` receiver and Stop hook
-    /// share a fixed inbox path. Default `main`. Ignored in channel mode, which
-    /// mints a random per-session id.
+    /// This session's id (server mode). Defaults to a random per-session id;
+    /// `INTERLINK_SESSION` pins a stable name.
     #[arg(long, env = "INTERLINK_SESSION")]
     session: Option<String>,
 }
@@ -1543,16 +1549,6 @@ fn channel_mode() -> bool {
         .unwrap_or(false)
 }
 
-/// The fallback session name: `--session` / `INTERLINK_SESSION`, default `main`.
-fn fallback_session(args: &Args) -> String {
-    args.session
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("main")
-        .to_string()
-}
-
 /// The local inbox queue where the server writes verified messages for the `wait`
 /// receiver to drain (fallback mode).
 fn inbox_path(session: &str) -> Option<PathBuf> {
@@ -1636,8 +1632,14 @@ fn append_inbox(
 /// print the new messages for the model, advance the cursor, and exit. Meant to run
 /// as a background task, re-armed by the Stop hook — so the task *completing* is what
 /// wakes a channel-less agent.
-async fn run_wait(args: &Args) -> Result<()> {
-    let session = fallback_session(args);
+async fn run_wait(w: &WaitArgs) -> Result<()> {
+    let session = w
+        .session
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("main")
+        .to_string();
     let path = inbox_path(&session).context("no state dir for the inbox")?;
     let cursor_path = path.with_extension("cursor");
     let start = std::fs::read_to_string(&cursor_path)
@@ -1734,8 +1736,8 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    if let Some(Command::Wait) = cli.command {
-        return run_wait(&cli.args).await;
+    if let Some(Command::Wait(w)) = &cli.command {
+        return run_wait(w).await;
     }
     let args = cli.args;
     let key_path = args
