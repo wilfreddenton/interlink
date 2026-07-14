@@ -401,7 +401,7 @@ impl Agent {
                         None,
                     ));
                 }
-                s.to_string()
+                self.resolve_session(to, s).await?
             }
             _ => self.route_session(to, &args.to).await?,
         };
@@ -422,6 +422,13 @@ impl Agent {
         // Unsigned routing hint so the peer's reply returns to this exact session.
         msg.reply_to = Some(self.inner.my_route());
         let to_key = Route::new(to.to_b64(), &session_id).to_string();
+        tracing::info!(
+            peer = %args.to,
+            requested_session = args.session.as_deref().unwrap_or("<auto>"),
+            resolved_session = %session_id,
+            to_self,
+            "send_message routing"
+        );
         let dest = format!("{} ({session_id})", args.to);
         self.inner
             .queue_outbound(to_key, &args.to, args.text.clone(), msg)
@@ -986,6 +993,41 @@ impl Agent {
             .find(|g| g.key == key)
             .map(|g| g.sessions)
             .unwrap_or_default()
+    }
+
+    /// Resolve a caller-supplied `session` hint to a full live session id. Session ids
+    /// are UUIDs now (they mirror Claude's `session_id`), but the model reliably passes
+    /// a short prefix (the old ids were 8 hex, and fingerprints are shown truncated), so
+    /// we match a hint that is an exact id *or* a unique prefix of one live session — a
+    /// truncated id would otherwise become a dead routing key and the message is lost.
+    /// A hint that matches no live session is used verbatim (the peer may be offline and
+    /// addressed by its full id; the bus queues until it wakes as that id).
+    async fn resolve_session(&self, peer: AgentId, hint: &str) -> Result<String, McpError> {
+        let sessions = self.peer_sessions(peer).await;
+        if sessions.iter().any(|s| s.session_id == hint) {
+            return Ok(hint.to_string());
+        }
+        let matches: Vec<&SessionInfo> = sessions
+            .iter()
+            .filter(|s| s.session_id.starts_with(hint))
+            .collect();
+        match matches.as_slice() {
+            [one] => Ok(one.session_id.clone()),
+            [] => Ok(hint.to_string()),
+            many => {
+                let list = many
+                    .iter()
+                    .map(|s| format!("  {}", session_line(s)))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Err(McpError::invalid_params(
+                    format!(
+                        "session '{hint}' matches several live sessions — use the full id:\n{list}"
+                    ),
+                    None,
+                ))
+            }
+        }
     }
 
     /// Which session to send to when the caller gave none. Prefer the sticky session
