@@ -20,6 +20,14 @@ const TARGETS = {
 };
 
 async function main() {
+  // Ensure the launcher (the npm `bin` entry) is executable. `npm link` would set the
+  // x-bit, but a raw tarball extraction — as npx's cache does — keeps the published
+  // file mode, so belt-and-suspenders it here too (postinstall always runs). Harmless
+  // on Windows, where the .js is run via node regardless.
+  try {
+    fs.chmodSync(path.join(__dirname, "bin", "interlink-mcp.js"), 0o755);
+  } catch {}
+
   const key = `${process.platform} ${process.arch}`;
   const target = TARGETS[key];
   if (!target) {

@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.1]
+
+### Fixed
+- **npm launcher wasn't executable on a clean `npx` cache.** `install.js` wrote the
+  native binary `0755`, but the launcher `bin/interlink-mcp.js` (the npm `bin` entry)
+  relied on `npm link` for its execute bit — a raw tarball extraction (npx's cache)
+  kept the published `0644`, so exec'ing it failed with *Permission denied* and the
+  MCP server never started. Two fixes: the launcher is now committed with its x-bit
+  (git tracks it, `npm publish` preserves file modes in the tarball), and `install.js`
+  `chmod`s it to `0755` in postinstall as a belt-and-suspenders.
+
 ## [0.7.0]
 
 ### Changed — the session id is Claude's own id
