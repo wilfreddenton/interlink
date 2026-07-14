@@ -112,6 +112,10 @@ struct Inner {
     /// of everyone's `discover` pick-list. Set on the first `send_message` or
     /// `set_summary`; until then the heartbeat announces nothing.
     engaged: AtomicBool,
+    /// Reply-stickiness: peer key (b64) → the `session_id` it last messaged from,
+    /// learned from the inbound `reply_to` hint. Lets a reply return to the exact
+    /// session without re-picking, and keeps a conversation pinned to one desk.
+    sticky: RwLock<HashMap<String, String>>,
     /// Inbound knocks awaiting the operator's accept/reject: sender key → name.
     pending_in: Mutex<PairTable>,
     /// Our outstanding pair requests: target key → the name we knocked (so an
@@ -120,6 +124,16 @@ struct Inner {
 }
 
 impl Inner {
+    /// This session's own inbox route, `key#session_id` — the `reply_to` hint a
+    /// peer uses to answer the exact session.
+    fn my_route(&self) -> String {
+        format!(
+            "{}#{}",
+            self.key.id().to_b64(),
+            self.session.read().unwrap().session_id
+        )
+    }
+
     /// Deliver to every relay, best-effort. Succeeds if at least one accepts;
     /// the recipient's dedupe collapses copies that arrive via multiple relays.
     async fn post_send(&self, to_key: &str, msg: &SignedMessage) -> Result<()> {
@@ -305,7 +319,7 @@ impl Agent {
         // could at worst misroute among the recipient's own sessions. The task
         // fields are signed too, so a relay can't tamper with them.
         engage(&self.inner).await;
-        let msg = self.inner.key.sign_full(
+        let mut msg = self.inner.key.sign_full(
             to,
             &args.text,
             ts,
@@ -315,6 +329,8 @@ impl Agent {
             status,
             args.in_reply_to.as_deref(),
         );
+        // Unsigned routing hint so the peer's reply returns to this exact session.
+        msg.reply_to = Some(self.inner.my_route());
         let to_key = format!("{}#{session_id}", to.to_b64());
         let job = OutboundJob {
             to_key,
@@ -857,11 +873,31 @@ impl Agent {
         out
     }
 
-    /// Which session to send to when the caller gave none: exactly one live session
-    /// auto-routes; none or several is an error the model surfaces (with the list to
-    /// pick from), since we can't guess an inbox.
+    /// Which session to send to when the caller gave none. Prefer the sticky session
+    /// (the one the peer last replied from) if it's still live; else auto-route a
+    /// lone live session. If the sticky session is the *only* thing we know and the
+    /// peer shows no live sessions, still address it — the peer is likely asleep and
+    /// the bus queues until it wakes as the same id (sleep-heal). No sticky and no
+    /// live session, or several to choose from, is an error with the list to pick.
     async fn route_session(&self, peer: AgentId, petname: &str) -> Result<String, McpError> {
         let mut sessions = self.peer_sessions(peer).await;
+        let sticky = self
+            .inner
+            .sticky
+            .read()
+            .unwrap()
+            .get(&peer.to_b64())
+            .cloned();
+        if let Some(sid) = &sticky {
+            if sessions.iter().any(|s| &s.session_id == sid) {
+                return Ok(sid.clone()); // sticky session still live — pin to it
+            }
+            if sessions.is_empty() {
+                return Ok(sid.clone()); // peer offline; queue for the sleep-heal
+            }
+            // sticky is stale but the peer has other live sessions → fall through
+            // and re-pick (a restart minted a new id).
+        }
         match sessions.len() {
             1 => Ok(sessions.pop().unwrap().session_id),
             0 => Err(McpError::invalid_params(
@@ -1044,6 +1080,21 @@ async fn inbound_loop(
                 in_reply_to,
             }) => {
                 log_inbound(&inner.store, &msg.msg_id, &petname, Some(&text)).await;
+                // Reply-stickiness: remember which of the peer's sessions this came
+                // from, so a reply pins to that desk. Only honor a hint whose key
+                // half matches the signed sender, so a relay can't repoint it.
+                if let Some(sid) = msg
+                    .reply_to
+                    .as_deref()
+                    .and_then(|r| r.strip_prefix(&format!("{}#", msg.from)))
+                    .filter(|s| !s.is_empty())
+                {
+                    inner
+                        .sticky
+                        .write()
+                        .unwrap()
+                        .insert(msg.from.clone(), sid.to_string());
+                }
                 // Progress marker: an inbound task request (task_id + no status)
                 // makes us the executor; a canceled for it clears the marker.
                 if let Some(tid) = task_id.as_deref() {
@@ -1459,6 +1510,7 @@ async fn main() -> Result<()> {
         name: node_name,
         session: RwLock::new(session),
         engaged: AtomicBool::new(false),
+        sticky: RwLock::new(HashMap::new()),
         pending_in: Mutex::new(PairTable::new(PAIR_CAP)),
         pending_out: Mutex::new(PairTable::new(PAIR_CAP)),
     });

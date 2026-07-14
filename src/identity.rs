@@ -206,6 +206,7 @@ impl AgentKey {
             task_id: task_id.map(str::to_string),
             status,
             in_reply_to: in_reply_to.map(str::to_string),
+            reply_to: None,
             sig: B64.encode(sig.to_bytes()),
         }
     }
@@ -268,6 +269,13 @@ pub struct SignedMessage {
     pub status: Option<TaskStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<String>,
+    /// The sender's own inbox route, `key#session_id` — an **unsigned** routing hint
+    /// (deliberately outside [`canonical`], like the bus-side `to` suffix) so a reply
+    /// returns to the exact session that sent this. A relay could tamper it, but only
+    /// to misroute a reply among the sender's own sessions; the trust gate is
+    /// untouched because the signed `from` is still the bare key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
     pub sig: String,
 }
 
