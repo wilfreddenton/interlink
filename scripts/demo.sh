@@ -40,7 +40,7 @@ bob_listen() {
   ( printf '%s\n' \
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"c","version":"0"}}}' \
       '{"jsonrpc":"2.0","method":"notifications/initialized"}'; sleep "$1" ) \
-    | INTERLINK_KEY="$D/bob.key" INTERLINK_PEERS="$D/bob-peers.json" INTERLINK_URL=http://127.0.0.1:9440 \
+    | INTERLINK_CHANNELS=1 INTERLINK_KEY="$D/bob.key" INTERLINK_PEERS="$D/bob-peers.json" INTERLINK_URL=http://127.0.0.1:9440 \
       "$BIN/interlink-mcp" 2>"$D/bob.err"
 }
 send_as() { # $1=keyfile $2=text
