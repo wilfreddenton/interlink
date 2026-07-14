@@ -26,6 +26,11 @@ All notable changes to this project are documented here. The format is based on
   twice.
 
 ### Notes
+- The fallback relies on a background task **completing** re-invoking the main agent
+  (the same wake that surfaces a finished background subagent). This is how current
+  Claude Code behaves but is **not documented**, so verify it in your build before
+  relying on it — the Stop hook uses `decision: "block"` (with a `stop_hook_active`
+  guard so it can never trap the agent) and detects the listener by task `name`.
 - Fallback is designed for one interlink session per machine (the channel-blocked
   work case); run several by giving each a distinct `INTERLINK_SESSION`. Channel mode
   keeps random per-session ids and multi-session addressing as before.

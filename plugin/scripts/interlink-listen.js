@@ -1,56 +1,60 @@
 #!/usr/bin/env node
 // Stop hook: keep the channel-less inbox listener armed.
 //
-// In fallback mode (no Claude Code channels), a peer's message can only wake this
-// agent when a *background task exits*. So the agent parks on a background
-// `interlink-mcp wait`, which blocks until a message lands and then returns —
-// surfacing it. That listener is one-shot: after it fires (or if it was never
-// armed) the agent would park deaf. On every Stop this hook checks whether the
-// listener is running and, if not, tells the model to re-arm it before parking.
+// In fallback mode (no Claude Code channels), incoming peer messages are surfaced
+// by a background task running `interlink-mcp wait`, which blocks until a message
+// lands and then returns — and a background task *completing* re-invokes the main
+// agent (the same mechanism that surfaces a finished subagent). That listener is
+// one-shot, so on every Stop this hook checks whether it's still running and, if
+// not, blocks the stop and tells the model to (re-)arm it before parking.
 //
 // Self-disables when channels are on (INTERLINK_CHANNELS=1): there the MCP server
-// pushes messages directly, so no background listener is needed.
+// pushes messages directly, so no listener is needed.
 //
 // Node (guaranteed present via the npm package) so it runs cross-platform.
 
 const channels = /^(1|true)$/i.test(process.env.INTERLINK_CHANNELS || "");
 if (channels) process.exit(0); // channel mode: the server pushes; nothing to arm
 
-// A tag we plant as an inert env-var prefix on the listener command, so we can
-// recognize *our* background task in the registry rather than matching incidental
-// text (which the shell may reformat).
-const TAG = "INTERLINK_TAG=interlink-listen";
 const waitCmd = process.env.INTERLINK_WAIT_CMD || "interlink-mcp wait";
-const command = `${TAG} ${waitCmd}`;
 
 let payload = "";
 process.stdin.on("data", (c) => (payload += c));
 process.stdin.on("end", () => {
-  let tasks = [];
+  let data = {};
   try {
-    tasks = JSON.parse(payload).background_tasks || [];
+    data = JSON.parse(payload);
   } catch {}
 
-  // Already armed? A running shell task carrying our tag means the listener is
-  // live; allow the agent to park.
+  // Claude Code raises `stop_hook_active` as the consecutive-block cap approaches.
+  // Always let the agent stop then, so this hook can never trap it.
+  if (data.stop_hook_active) process.exit(0);
+
+  // Is the listener already running? Match a live background task whose name looks
+  // like our `wait` command. (The Stop payload carries id/name/status, not the full
+  // command, so we match on the name.)
+  const tasks = Array.isArray(data.background_tasks) ? data.background_tasks : [];
   const armed = tasks.some(
-    (t) => t && t.type === "shell" && String(t.command || "").includes(TAG),
+    (t) =>
+      t &&
+      t.status !== "completed" &&
+      t.status !== "failed" &&
+      /interlink/i.test(String(t.name || "")),
   );
-  if (armed) process.exit(0);
+  if (armed) process.exit(0); // listening — allow the stop
 
-  const ctx =
-    "[interlink] Your inbox listener is not armed, so you would park deaf to " +
-    "incoming peer messages. Re-arm it exactly once as a background task (Bash " +
-    "with run_in_background: true):\n\n    " +
-    command +
-    "\n\nIt blocks until a message arrives, then prints it as an <interlink> block. " +
-    "When it returns, handle the message (attribute it to the sender; act on a " +
-    "peer's request) and then re-arm it again.";
+  // Not armed: block the stop and drive a re-arm. `decision: block` continues the
+  // turn so the model can spawn the task now, rather than parking deaf.
+  const reason =
+    "You are in interlink's channel-less mode and have no inbox listener running, " +
+    "so you would park without hearing incoming peer messages. Before you stop, run " +
+    "this as a background task (Bash with run_in_background: true):\n\n    " +
+    waitCmd +
+    "\n\nIt blocks until a peer message arrives, then prints it as an <interlink> " +
+    "block and exits — which wakes you. When that happens, handle the message " +
+    "(attribute it to the sender; act on a peer's request) and then re-arm this same " +
+    "task. If you have nothing else to do, just arm it and stop.";
 
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: { hookEventName: "Stop", additionalContext: ctx },
-    }),
-  );
+  process.stdout.write(JSON.stringify({ decision: "block", reason }));
   process.exit(0);
 });
