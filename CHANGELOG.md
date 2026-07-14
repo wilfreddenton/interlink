@@ -12,11 +12,23 @@ All notable changes to this project are documented here. The format is based on
   `peers.json` (only the holder of your secret key can produce such a signature, so
   this grants nothing to anyone else). `discover` shows your own identity `[you]`
   with all its live sessions, marking the calling one `← this session`.
+- **`discover` takes an optional `peer`** (petname, name, fingerprint, or key) to
+  list just that identity's live sessions instead of the whole roster.
 
 ### Fixed
+- **Pairing and task-cancel were undeliverable after 0.5.0.** When the inbox became
+  `key#session_id`, only `send_message` was updated — `request_pair`, `accept_pair`,
+  and `cancel_task` still targeted the bare-key inbox, which no session polls, so
+  knocks/accepts/cancels silently went nowhere. They now route to a live session
+  (`key#session_id`) like everything else.
 - **A session can no longer address itself.** Its own session is excluded from
   `discover`-based auto-routing, and an explicit self-target is refused; a defensive
   inbound guard drops any self-to-self loopback as a backstop.
+
+### Internal
+- Deduplicated the roster fetch/verify (one `verified_roster` + `NodeGroup`
+  grouping behind `discover` / `resolve_target` / `peer_sessions`) and the outbound
+  send path (a shared `queue_outbound`).
 
 ## [0.5.0]
 

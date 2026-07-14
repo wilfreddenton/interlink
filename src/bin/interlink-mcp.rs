@@ -134,6 +134,46 @@ impl Inner {
         )
     }
 
+    /// Persist an outbound message durably: log it, enqueue to the outbox, wake the
+    /// sender. Shared by every tool that sends (message, cancel). Returns the msg_id.
+    async fn queue_outbound(
+        &self,
+        to_key: String,
+        peer: &str,
+        log_text: String,
+        msg: SignedMessage,
+    ) -> Result<String, McpError> {
+        let msg_id = msg.msg_id.clone();
+        let ts = msg.ts;
+        let job = OutboundJob {
+            to_key,
+            peer: peer.to_string(),
+            msg_id: msg_id.clone(),
+            msg,
+        };
+        let bytes = serde_json::to_vec(&job)
+            .map_err(|e| McpError::internal_error(format!("encoding message: {e}"), None))?;
+        // Record before enqueuing so history reflects the message even if we crash
+        // between the two; the outbox is the source of truth for delivery.
+        self.store
+            .log_put(LogRecord {
+                msg_id: msg_id.clone(),
+                dir: Dir::Out,
+                peer: peer.to_string(),
+                text: Some(log_text),
+                ts,
+                state: "pending".into(),
+            })
+            .await
+            .map_err(|e| McpError::internal_error(format!("logging message: {e}"), None))?;
+        self.store
+            .enqueue(OUTBOX.into(), bytes)
+            .await
+            .map_err(|e| McpError::internal_error(format!("queuing message: {e}"), None))?;
+        self.outbox.notify_one();
+        Ok(msg_id)
+    }
+
     /// Deliver to every relay, best-effort. Succeeds if at least one accepts;
     /// the recipient's dedupe collapses copies that arrive via multiple relays.
     async fn post_send(&self, to_key: &str, msg: &SignedMessage) -> Result<()> {
@@ -195,6 +235,13 @@ struct SendArgs {
     /// Optional msg_id this message answers — links an answer to the "needs_input"
     /// question it resolves.
     in_reply_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DiscoverArgs {
+    /// Optional: restrict to one identity's live sessions — a petname, name,
+    /// fingerprint, or full key. Omit to list every online node.
+    peer: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -350,35 +397,10 @@ impl Agent {
         // Unsigned routing hint so the peer's reply returns to this exact session.
         msg.reply_to = Some(self.inner.my_route());
         let to_key = format!("{}#{session_id}", to.to_b64());
-        let job = OutboundJob {
-            to_key,
-            peer: args.to.clone(),
-            msg_id: msg_id.clone(),
-            msg,
-        };
         let dest = format!("{} ({session_id})", args.to);
-        let bytes = serde_json::to_vec(&job)
-            .map_err(|e| McpError::internal_error(format!("encoding message: {e}"), None))?;
-        // Record before enqueuing so history reflects the message even if we
-        // crash between the two; the outbox is the source of truth for delivery.
         self.inner
-            .store
-            .log_put(LogRecord {
-                msg_id: msg_id.clone(),
-                dir: Dir::Out,
-                peer: args.to.clone(),
-                text: Some(args.text.clone()),
-                ts,
-                state: "pending".into(),
-            })
-            .await
-            .map_err(|e| McpError::internal_error(format!("logging message: {e}"), None))?;
-        self.inner
-            .store
-            .enqueue(OUTBOX.into(), bytes)
-            .await
-            .map_err(|e| McpError::internal_error(format!("queuing message: {e}"), None))?;
-        self.inner.outbox.notify_one();
+            .queue_outbound(to_key, &args.to, args.text.clone(), msg)
+            .await?;
         // Progress heartbeat: our own update/terminal resets the hook's timer; a
         // terminal also clears the executor marker for that task.
         if let Some(st) = status {
@@ -417,13 +439,16 @@ impl Agent {
             .unwrap()
             .resolve(&args.to)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        // Route to a live session, same as send_message — the bare-key inbox is not
+        // polled by anyone, so a cancel must target `key#session_id` too.
+        let session_id = self.route_session(to, &args.to).await?;
         let msg_id = new_msg_id();
         let ts = interlink::now_ms();
         let text = args
             .reason
             .filter(|r| !r.trim().is_empty())
             .unwrap_or_else(|| "canceled".into());
-        let msg = self.inner.key.sign_full(
+        let mut msg = self.inner.key.sign_full(
             to,
             &text,
             ts,
@@ -433,35 +458,20 @@ impl Agent {
             Some(TaskStatus::Canceled),
             None,
         );
-        let job = OutboundJob {
-            to_key: to.to_b64(),
-            peer: args.to.clone(),
-            msg_id: msg_id.clone(),
-            msg,
-        };
-        let bytes = serde_json::to_vec(&job)
-            .map_err(|e| McpError::internal_error(format!("encoding message: {e}"), None))?;
-        self.inner
-            .store
-            .log_put(LogRecord {
-                msg_id: msg_id.clone(),
-                dir: Dir::Out,
-                peer: args.to.clone(),
-                text: Some(format!("[cancel {}] {text}", args.task_id)),
-                ts,
-                state: "pending".into(),
-            })
-            .await
-            .map_err(|e| McpError::internal_error(format!("logging message: {e}"), None))?;
-        self.inner
-            .store
-            .enqueue(OUTBOX.into(), bytes)
-            .await
-            .map_err(|e| McpError::internal_error(format!("queuing message: {e}"), None))?;
-        self.inner.outbox.notify_one();
+        msg.reply_to = Some(self.inner.my_route());
+        let to_key = format!("{}#{session_id}", to.to_b64());
+        let msg_id = self
+            .inner
+            .queue_outbound(
+                to_key,
+                &args.to,
+                format!("[cancel {}] {text}", args.task_id),
+                msg,
+            )
+            .await?;
         progress_clear_marker_if(&args.task_id);
         Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-            "sent cancel for task '{}' to {} (msg_id {msg_id})",
+            "sent cancel for task '{}' to {} ({session_id}) (msg_id {msg_id})",
             args.task_id, args.to
         ))]))
     }
@@ -543,79 +553,86 @@ impl Agent {
     #[tool(
         description = "List nodes currently announced on the bus roster, grouped by identity, each \
                        with its live sessions (session_id · cwd · git repo · summary) — the \
-                       session_id is what you pass to send_message. Marks which are already peers. \
-                       Identity is the key — a name is only a self-claim, so verify the fingerprint \
-                       before pairing."
+                       session_id is what you pass to send_message. Pass `peer` (a petname, name, \
+                       fingerprint, or key) to list just that identity's sessions; omit it for \
+                       everyone. Marks which are already peers. Identity is the key — a name is only \
+                       a self-claim, so verify the fingerprint before pairing."
     )]
-    async fn discover(&self) -> Result<CallToolResult, McpError> {
+    async fn discover(
+        &self,
+        Parameters(args): Parameters<DiscoverArgs>,
+    ) -> Result<CallToolResult, McpError> {
         let me = self.inner.key.id().to_b64();
         let my_session = self.inner.session.read().unwrap().session_id.clone();
-        // Verified announcements grouped by identity → its live sessions. Insertion
-        // order preserved; sessions deduped by id.
-        let mut order: Vec<String> = Vec::new();
-        let mut by_key: HashMap<String, (String, Vec<SessionInfo>)> = HashMap::new();
-        let mut seen_session = HashSet::new();
-        for url in &self.inner.urls {
-            let Some(roster) = fetch_roster(&self.inner.http, url).await else {
-                continue;
+        let mut nodes = group_by_identity(self.verified_roster().await);
+
+        // Optional filter to one identity. Resolve as a peers.json petname first
+        // (how you address it in send_message), then fall back to a roster
+        // name/fingerprint/key.
+        if let Some(target) = args
+            .peer
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            // Resolve the petname up front so no lock guard is held across the await.
+            let petname_key = self
+                .inner
+                .policy
+                .read()
+                .unwrap()
+                .resolve(target)
+                .ok()
+                .map(|id| id.to_b64());
+            let key = match petname_key {
+                Some(k) => k,
+                None => self
+                    .resolve_target(target)
+                    .await
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?,
             };
-            for entry in roster {
-                let Ok(ann) = serde_json::from_value::<Announcement>(entry) else {
-                    continue;
-                };
-                // A name is trusted only after the announcement's self-signature
-                // verifies; identity is the key it authenticates.
-                let Ok(id) = ann.verify() else { continue };
-                let pk = id.to_b64();
-                let entry = by_key.entry(pk.clone()).or_insert_with(|| {
-                    order.push(pk.clone());
-                    (ann.name.clone(), Vec::new())
-                });
-                if !ann.session.session_id.is_empty()
-                    && seen_session.insert(format!("{pk}#{}", ann.session.session_id))
-                {
-                    entry.1.push(ann.session);
-                }
-            }
+            nodes.retain(|g| g.key == key);
         }
+
         let mut name_counts: HashMap<&str, usize> = HashMap::new();
-        for pk in &order {
-            *name_counts.entry(by_key[pk].0.as_str()).or_default() += 1;
+        for g in &nodes {
+            *name_counts.entry(g.name.as_str()).or_default() += 1;
         }
         let policy = self.inner.policy.read().unwrap();
-        let mut blocks = Vec::new();
-        for pk in &order {
-            let (name, sessions) = &by_key[pk];
-            let fp: String = pk.chars().take(8).collect();
-            let mut tags = Vec::new();
-            if *pk == me {
-                tags.push("you");
-            } else if AgentId::from_b64(pk)
-                .ok()
-                .and_then(|id| policy.peer(id).map(|_| ()))
-                .is_some()
-            {
-                tags.push("already a peer");
-            }
-            if name_counts.get(name.as_str()).copied().unwrap_or(0) > 1 {
-                tags.push("name shared — verify fingerprint");
-            }
-            let tagstr = if tags.is_empty() {
-                String::new()
-            } else {
-                format!("  [{}]", tags.join(", "))
-            };
-            let mut block = format!("{name} ({fp}…){tagstr}\n    key: {pk}");
-            for s in sessions {
-                // Flag our own session so the operator doesn't try to reach it.
-                let mine = *pk == me && s.session_id == my_session;
-                let suffix = if mine { "  ← this session" } else { "" };
-                block.push_str(&format!("\n    → {}{suffix}", session_line(s)));
-            }
-            blocks.push(block);
-        }
+        let blocks: Vec<String> = nodes
+            .iter()
+            .map(|g| {
+                let fp: String = g.key.chars().take(8).collect();
+                let mut tags = Vec::new();
+                if g.key == me {
+                    tags.push("you");
+                } else if AgentId::from_b64(&g.key)
+                    .ok()
+                    .and_then(|id| policy.peer(id).map(|_| ()))
+                    .is_some()
+                {
+                    tags.push("already a peer");
+                }
+                if name_counts.get(g.name.as_str()).copied().unwrap_or(0) > 1 {
+                    tags.push("name shared — verify fingerprint");
+                }
+                let tagstr = if tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{}]", tags.join(", "))
+                };
+                let mut block = format!("{} ({fp}…){tagstr}\n    key: {}", g.name, g.key);
+                for s in &g.sessions {
+                    // Flag our own session so the operator doesn't try to reach it.
+                    let mine = g.key == me && s.session_id == my_session;
+                    let suffix = if mine { "  ← this session" } else { "" };
+                    block.push_str(&format!("\n    → {}{suffix}", session_line(s)));
+                }
+                block
+            })
+            .collect();
         let body = if blocks.is_empty() {
-            "no nodes announced on the bus roster".to_string()
+            "no matching nodes on the bus roster".to_string()
         } else {
             blocks.join("\n")
         };
@@ -661,21 +678,35 @@ impl Agent {
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         let to = AgentId::from_b64(&target_key)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        // A knock has to reach a live session (no session polls the bare key). Any
+        // of the target's sessions works — the accept is identity-level.
+        let Some(session) = self.peer_sessions(to).await.into_iter().next() else {
+            return Err(McpError::invalid_params(
+                format!(
+                    "'{}' has no live session to knock — they may be offline",
+                    args.target
+                ),
+                None,
+            ));
+        };
         // Remember that we knocked them, then knock (carrying only our name).
         self.inner
             .pending_out
             .lock()
             .await
             .put(target_key.clone(), args.target.clone());
-        let msg = self.inner.key.sign_as(
+        let mut msg = self.inner.key.sign_as(
             to,
             &self.inner.name,
             interlink::now_ms(),
             &new_msg_id(),
             MessageKind::PairRequest,
         );
+        // So their accept can route back to this exact session.
+        msg.reply_to = Some(self.inner.my_route());
+        let to_key = format!("{target_key}#{}", session.session_id);
         self.inner
-            .post_send(&target_key, &msg)
+            .post_send(&to_key, &msg)
             .await
             .map_err(|e| McpError::internal_error(format!("sending knock: {e}"), None))?;
         let fp: String = target_key.chars().take(8).collect();
@@ -725,18 +756,26 @@ impl Agent {
         add_authorized_peer(&self.inner, &name, &key)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
         self.inner.pending_in.lock().await.take(&key);
-        // Tell them we accepted (carrying our name), so they add us in return.
+        // Tell them we accepted (carrying our name), so they add us in return. Route
+        // to one of their live sessions — the bare key isn't polled.
         let to =
             AgentId::from_b64(&key).map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        let msg = self.inner.key.sign_as(
-            to,
-            &self.inner.name,
-            interlink::now_ms(),
-            &new_msg_id(),
-            MessageKind::PairAccept,
-        );
-        if let Err(e) = self.inner.post_send(&key, &msg).await {
-            tracing::warn!("pair_accept send failed (peer may not learn): {e}");
+        match self.peer_sessions(to).await.into_iter().next() {
+            Some(session) => {
+                let mut msg = self.inner.key.sign_as(
+                    to,
+                    &self.inner.name,
+                    interlink::now_ms(),
+                    &new_msg_id(),
+                    MessageKind::PairAccept,
+                );
+                msg.reply_to = Some(self.inner.my_route());
+                let to_key = format!("{key}#{}", session.session_id);
+                if let Err(e) = self.inner.post_send(&to_key, &msg).await {
+                    tracing::warn!("pair_accept send failed (peer may not learn): {e}");
+                }
+            }
+            None => tracing::warn!("accepted '{name}' but they have no live session to notify"),
         }
         Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "accepted '{name}' as a chat peer"
@@ -828,51 +867,45 @@ impl Agent {
     }
 }
 
-impl Agent {
-    /// Resolve a `discover` target — full key, exact fingerprint, or name — to a
-    /// verified key from the roster. Errors on no match, or an ambiguous one.
-    async fn resolve_target(&self, target: &str) -> Result<String> {
-        let mut nodes: Vec<(String, String)> = Vec::new();
-        let mut seen = HashSet::new();
-        for url in &self.inner.urls {
-            let Some(roster) = fetch_roster(&self.inner.http, url).await else {
-                continue;
-            };
-            for entry in roster {
-                let Ok(ann) = serde_json::from_value::<Announcement>(entry) else {
-                    continue;
-                };
-                let Ok(id) = ann.verify() else { continue };
-                let pk = id.to_b64();
-                if seen.insert(pk.clone()) {
-                    nodes.push((pk, ann.name));
-                }
+/// One identity on the roster with its live sessions — the grouped shape the
+/// discovery tools work in. `key` is the base64 public key; `name` is the (verified)
+/// self-claimed roster name.
+struct NodeGroup {
+    key: String,
+    name: String,
+    sessions: Vec<SessionInfo>,
+}
+
+/// Group verified announcements by identity, preserving first-seen order.
+/// Announcements are already deduped by `key#session_id`, so each session appears
+/// once.
+fn group_by_identity(anns: Vec<Announcement>) -> Vec<NodeGroup> {
+    let mut order = Vec::new();
+    let mut by_key: HashMap<String, NodeGroup> = HashMap::new();
+    for ann in anns {
+        let group = by_key.entry(ann.pubkey.clone()).or_insert_with(|| {
+            order.push(ann.pubkey.clone());
+            NodeGroup {
+                key: ann.pubkey.clone(),
+                name: ann.name.clone(),
+                sessions: Vec::new(),
             }
-        }
-        if let Some((k, _)) = nodes.iter().find(|(k, _)| k == target) {
-            return Ok(k.clone());
-        }
-        let by_fp: Vec<&(String, String)> = nodes
-            .iter()
-            .filter(|(k, _)| k.chars().take(8).collect::<String>() == target)
-            .collect();
-        if by_fp.len() == 1 {
-            return Ok(by_fp[0].0.clone());
-        }
-        if by_fp.len() > 1 {
-            bail!("fingerprint '{target}' is ambiguous — use the full key");
-        }
-        let by_name: Vec<&(String, String)> = nodes.iter().filter(|(_, n)| n == target).collect();
-        match by_name.len() {
-            1 => Ok(by_name[0].0.clone()),
-            0 => bail!("no node '{target}' on the roster (run discover to see who's online)"),
-            _ => bail!("name '{target}' is shared by multiple keys — use the fingerprint"),
+        });
+        if !ann.session.session_id.is_empty() {
+            group.sessions.push(ann.session);
         }
     }
+    order
+        .into_iter()
+        .map(|k| by_key.remove(&k).unwrap())
+        .collect()
+}
 
-    /// A peer's live sessions from the roster (signature-verified, deduped by
-    /// `session_id` across relays).
-    async fn peer_sessions(&self, peer: AgentId) -> Vec<SessionInfo> {
+impl Agent {
+    /// Every currently-announced session across all relays, signature-verified and
+    /// deduped by `key#session_id`. The single source every discovery path builds on
+    /// — the bus never verifies, so the check happens here, once.
+    async fn verified_roster(&self) -> Vec<Announcement> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         for url in &self.inner.urls {
@@ -883,16 +916,52 @@ impl Agent {
                 let Ok(ann) = serde_json::from_value::<Announcement>(entry) else {
                     continue;
                 };
-                let Ok(id) = ann.verify() else { continue };
-                if id == peer
-                    && !ann.session.session_id.is_empty()
-                    && seen.insert(ann.session.session_id.clone())
-                {
-                    out.push(ann.session);
+                // Identity is the key the self-signature authenticates; a name or
+                // session is trusted only once it verifies.
+                if ann.verify().is_err() {
+                    continue;
+                }
+                if seen.insert(format!("{}#{}", ann.pubkey, ann.session.session_id)) {
+                    out.push(ann);
                 }
             }
         }
         out
+    }
+
+    /// Resolve a `discover` target — full key, exact fingerprint, or name — to a
+    /// verified key from the roster. Errors on no match, or an ambiguous one.
+    async fn resolve_target(&self, target: &str) -> Result<String> {
+        let nodes = group_by_identity(self.verified_roster().await);
+        if let Some(g) = nodes.iter().find(|g| g.key == target) {
+            return Ok(g.key.clone());
+        }
+        let by_fp: Vec<&NodeGroup> = nodes
+            .iter()
+            .filter(|g| g.key.chars().take(8).collect::<String>() == target)
+            .collect();
+        if by_fp.len() == 1 {
+            return Ok(by_fp[0].key.clone());
+        }
+        if by_fp.len() > 1 {
+            bail!("fingerprint '{target}' is ambiguous — use the full key");
+        }
+        let by_name: Vec<&NodeGroup> = nodes.iter().filter(|g| g.name == target).collect();
+        match by_name.len() {
+            1 => Ok(by_name[0].key.clone()),
+            0 => bail!("no node '{target}' on the roster (run discover to see who's online)"),
+            _ => bail!("name '{target}' is shared by multiple keys — use the fingerprint"),
+        }
+    }
+
+    /// A peer's live sessions from the roster.
+    async fn peer_sessions(&self, peer: AgentId) -> Vec<SessionInfo> {
+        let key = peer.to_b64();
+        group_by_identity(self.verified_roster().await)
+            .into_iter()
+            .find(|g| g.key == key)
+            .map(|g| g.sessions)
+            .unwrap_or_default()
     }
 
     /// Which session to send to when the caller gave none. Prefer the sticky session

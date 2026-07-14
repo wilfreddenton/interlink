@@ -73,7 +73,8 @@ are always operator-only, never done on a peer's say-so.
 
 Operator: "connect to my desktop."
 
-1. `discover` → lists online nodes as `name (fingerprint)`, each with its live sessions.
+1. `discover` → lists online nodes as `name (fingerprint)`, each with its live
+   sessions. Pass `peer: "<name>"` to narrow to one identity.
 2. Confirm the **fingerprint** with your operator (names are unverified hints).
 3. `request_pair(target: "<name or fingerprint>")` — knocks the node.
 4. They must accept before either side can message the other.
