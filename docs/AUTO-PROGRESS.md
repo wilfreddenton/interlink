@@ -27,7 +27,10 @@ hook silent. Silent agent → guaranteed heartbeat.
 
 ## Mechanism
 
-Three small pieces, all in the state dir (`~/.local/state/interlink/`):
+Three small pieces, all under a **per-session** state dir
+(`~/.local/state/interlink/task/<session_id>/`) — scoped by session so two sessions on
+one machine never read each other's marker. The server keys it by its own session id;
+the hook derives the same path from the `session_id` in its `PostToolUse` stdin payload:
 
 1. **Current-task marker** (`current-task.json` = `{ task_id, peer, since }`),
    written/cleared by the MCP server so the hook knows whether a task is running

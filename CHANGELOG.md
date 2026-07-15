@@ -3,6 +3,40 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.4]
+
+### Added
+- **Two-tier presence (live / away / gone).** A silent session is no longer evicted at
+  ~90s. The bus now retains a session for up to ~3 days as **away** (probably asleep),
+  so a slept laptop stays addressable and its mail is no longer misrouted to an awake
+  sibling under the same identity — it drains when the laptop wakes. `discover` marks
+  away sessions (`away · last seen …`), and `send_message` reports the target's state
+  (`delivering` / `asleep, delivers on wake` / `not on the roster`). Wire-compatible:
+  the age is an additive, unsigned `age_ms` on the roster entry. See `docs/PRESENCE.md`.
+- **Goodbye-on-close.** On a clean session close, active chat partners are sent a signed
+  "I'm ending this session" message, so an idle peer is told rather than discovering it
+  on its next send.
+
+### Fixed
+- **Pairing could silently repoint a trusted peer.** Accepting a knock now files the
+  peer under the petname *your operator* chose, and `Policy::add` refuses to rekey an
+  existing petname to a different key (it previously overwrote it) — a pairing message
+  can no longer hijack an existing peer's name. **Security fix.**
+- **Peer messages could spoof sender attribution.** Peer-controlled message text and
+  task fields are now escaped before going into the channel-less delivery wrapper, so a
+  message body can't forge a second, higher-authority `sender` block. **Security fix.**
+- **A stalled relay could wedge all outbound delivery.** Outbound sends now carry a
+  request timeout, so one connected-but-unresponsive relay can no longer block delivery
+  to every peer indefinitely.
+- **Pairing knocks now prefer a live session** over an asleep one when a peer has both,
+  so a knock isn't lost to a sleeping laptop while an awake session is right there.
+- **`to:"self"` with a session prefix** no longer silently drops the message.
+- **Progress-nudge markers are per-session,** so two sessions on one machine can't nudge
+  each other about tasks they aren't running.
+- Secret keys are created `0600` in one step (no brief world-readable window); the bus
+  wakeup map is bounded; the channel-less inbox listener recovers if the inbox is
+  truncated mid-wait.
+
 ## [0.7.3]
 
 ### Changed

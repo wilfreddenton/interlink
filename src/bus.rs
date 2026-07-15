@@ -37,6 +37,10 @@ pub const AWAY_RETAIN_MS: u64 = 3 * 24 * 60 * 60 * 1_000; // 3 days
 /// limit. Far above any real mesh; expired entries are pruned first.
 const ROSTER_CAP: usize = 4096;
 
+/// When the wakeup map grows past this, prune idle entries so a stream of distinct
+/// (unauthenticated) recipient ids can't leak `Notify`s without bound.
+const NOTIFY_CAP: usize = 4096;
+
 /// A payload addressed to a recipient, stamped on arrival.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Envelope {
@@ -114,6 +118,14 @@ impl Broker {
     }
 
     fn notify_handle(&self, id: &str) -> Arc<Notify> {
+        // Before adding a new id, prune idle notifies when the map is large. An entry
+        // whose Arc has no clone outside the map (`strong_count == 1`) has no parked
+        // waiter, so dropping it can't lose a wakeup — a later waiter recreates it and
+        // peeks the durable store directly. Bounds an otherwise-unbounded leak from a
+        // flood of distinct recipient ids on the unauthenticated `/send`//`/recv`.
+        if self.notifies.len() > NOTIFY_CAP && !self.notifies.contains_key(id) {
+            self.notifies.retain(|_, v| Arc::strong_count(v) > 1);
+        }
         self.notifies
             .entry(id.to_string())
             .or_insert_with(|| Arc::new(Notify::new()))

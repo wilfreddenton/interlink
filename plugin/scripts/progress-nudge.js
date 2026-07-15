@@ -14,9 +14,21 @@ const os = require("os");
 const interval = parseInt(process.env.INTERLINK_PROGRESS_INTERVAL || "60", 10);
 if (!Number.isFinite(interval) || interval <= 0) process.exit(0); // 0 / invalid = disabled
 
+// The PostToolUse payload carries this session's id (the same id the interlink server
+// registered under). Scope the task state to it so a sibling session on this machine
+// can't read our marker and get nudged about a task it never ran.
+let session = "";
+try {
+  const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+  session = (payload && payload.session_id) || "";
+} catch {}
+if (!session) process.exit(0);
+
 const stateDir = path.join(
   process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"),
   "interlink",
+  "task",
+  session,
 );
 const inState = (name) => path.join(stateDir, name);
 

@@ -4,11 +4,15 @@
 //! agent's id. Share that with peers out of band; they add it to their
 //! `peers.json` under whatever petname they like.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use interlink::identity::AgentKey;
+#[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 #[derive(Parser)]
 #[command(about = "Generate an Ed25519 agent identity")]
@@ -33,9 +37,8 @@ fn main() -> Result<()> {
     }
 
     let key = AgentKey::generate()?;
-    std::fs::write(&args.out, format!("{}\n", key.to_b64()))
+    write_secret(&args.out, &format!("{}\n", key.to_b64()))
         .with_context(|| format!("writing {}", args.out.display()))?;
-    restrict(&args.out)?;
 
     let id = key.id();
     println!("secret key : {}", args.out.display());
@@ -50,15 +53,26 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Write the secret key so it is *never* momentarily world-readable: the file is
+/// created 0600 in a single step, not written then chmodded (which leaves a TOCTOU
+/// window at the default umask, and a permanent 0644 if the chmod fails).
 #[cfg(unix)]
-fn restrict(path: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .context("restricting key file permissions")
+fn write_secret(path: &Path, contents: &str) -> Result<()> {
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    // An existing file keeps its old mode, so tighten it explicitly for --force too.
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    f.write_all(contents.as_bytes())?;
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn restrict(_path: &std::path::Path) -> Result<()> {
+fn write_secret(path: &Path, contents: &str) -> Result<()> {
     // Windows inherits the parent directory's ACL; nothing portable to do here.
+    std::fs::write(path, contents)?;
     Ok(())
 }

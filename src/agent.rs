@@ -1,7 +1,7 @@
 //! The per-agent channel server and its decision logic.
 //!
 //! Inbound flow, for each message drained from the bus:
-//!   verify signature → sender on the allowlist? → addressed to me? → fresh? →
+//!   verify signature → addressed to me? → sender on the allowlist? → fresh? →
 //!   not a replay? → dispatch.
 //!
 //! An admitted peer is handled **inline**: the message is pushed straight into

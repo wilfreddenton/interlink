@@ -118,8 +118,16 @@ impl Policy {
         {
             bail!("that key is already authorized as '{}'", other.petname);
         }
-        match self.peers.iter_mut().find(|p| p.petname == petname) {
-            Some(existing) => existing.id = id,
+        match self.peers.iter().find(|p| p.petname == petname) {
+            // Exact name→key match already present: idempotent no-op. A different key
+            // under this petname is rejected, not silently rekeyed — otherwise a
+            // pairing message claiming an existing peer's name would repoint trust.
+            Some(existing) if existing.id == id => {}
+            Some(existing) => bail!(
+                "petname '{petname}' is already authorized under a different key ({}); \
+                 remove it first to reassign",
+                existing.id.to_b64()
+            ),
             None => self.peers.push(Peer {
                 petname: petname.to_string(),
                 id,
@@ -235,6 +243,24 @@ mod tests {
         p.add("bot", &k.id().to_b64()).unwrap();
         p.add("bot", &k.id().to_b64()).unwrap();
         assert_eq!(p.len(), 1, "same petname does not duplicate");
+    }
+
+    #[test]
+    fn add_refuses_to_rekey_an_existing_petname() {
+        // A pairing message must not be able to repoint a trusted petname to a new key.
+        let old = AgentKey::generate().unwrap();
+        let attacker = AgentKey::generate().unwrap();
+        let mut p = Policy::default();
+        p.add("laptop", &old.id().to_b64()).unwrap();
+        assert!(
+            p.add("laptop", &attacker.id().to_b64()).is_err(),
+            "an existing petname must not be silently rekeyed"
+        );
+        assert_eq!(
+            p.resolve("laptop").unwrap(),
+            old.id(),
+            "the original binding is preserved"
+        );
     }
 
     #[test]

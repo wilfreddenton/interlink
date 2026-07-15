@@ -36,11 +36,11 @@ Authorization is one deterministic gate, in `agent::decide`, that never trusts t
 model's judgment. Every inbound message runs:
 
 ```
-verify signature → sender on the allowlist? → addressed to me? → fresh? → not a replay?
+verify signature → addressed to me? → sender on the allowlist? → fresh? → not a replay?
 ```
 
 The message is signed over a domain-separated, length-prefixed encoding
-(`"interlink-v1\0" ‖ from ‖ to ‖ ts ‖ kind ‖ msg_id ‖ text`) and verified with
+(`"interlink-v2\0" ‖ from ‖ to ‖ ts ‖ kind ‖ msg_id ‖ text ‖ status ‖ task_id ‖ in_reply_to`) and verified with
 `verify_strict` (rejects small-order keys and non-canonical signatures). The
 **authenticated** key — never the claimed `from` string — is looked up in
 `peers.json`; an unknown key is dropped before the model ever sees it. `ts` and

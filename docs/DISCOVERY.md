@@ -29,12 +29,15 @@ you, so the hole is made as small as it can be:
 The bus stays dumb — a bulletin board, not a trust authority.
 
 - `POST /announce` — a node posts a **signed self-attestation**
-  `{ pubkey, name, ts, sig }`. The bus stores it in a roster with a short TTL
-  (~90s); nodes re-announce on a heartbeat, so the roster reflects *who is online
-  now*. The bus does **not** verify — it stores and serves; **clients verify** the
-  signature and discard anything that doesn't check out.
-- `GET /roster` — the live (non-expired) announcements. Bounded (drop-oldest) so a
-  flood can't grow it without limit.
+  `{ pubkey, name, session, ts, sig }`. The bus retains it for up to `AWAY_RETAIN_MS`
+  (~3 days) and stamps each `/roster` entry with an `age_ms`; nodes re-announce on a
+  ~30s heartbeat. A client reads the age to classify each session **live** (< ~90s,
+  `LIVE_MS`) vs. **away** (silent but retained, probably asleep) — so a slept laptop
+  stays addressable rather than vanishing. The bus does **not** verify — it stores and
+  serves; **clients verify** the signature and discard anything that doesn't check out.
+  See [`PRESENCE.md`](./PRESENCE.md).
+- `GET /roster` — the retained announcements, each with `age_ms`. Bounded (drop-oldest)
+  so a flood can't grow it without limit.
 - **Names are hints, not identity.** Not globally unique, not enforced by the bus.
   Discovery renders `name (fingerprint)`; the client flags collisions. Identity is
   the key — you verify and **pin the key on first pair (TOFU)**, never the name.
