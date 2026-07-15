@@ -185,9 +185,9 @@ pairing on a *cryptographic* identity is rare among agent-chat MCP servers.
 ## Many sessions on one machine
 
 interlink installs as a user-scope plugin, so **every** Claude Code session runs
-its own `interlink-mcp` — and they're all addressable. Each mints a random
-`session_id` at startup and polls its own inbox `key#session_id`, so there's no
-shared mailbox and no fan-out. A session **registers on startup** (node + session;
+its own `interlink-mcp` — and they're all addressable. Each takes its stable id from
+`CLAUDE_CODE_SESSION_ID` (a random one off-Claude) and polls its own inbox
+`key#session_id`, so there's no shared mailbox and no fan-out. A session **registers on startup** (node + session;
 node registration is idempotent — the bus groups sessions under one `pubkey`) and
 unregisters on close, so the roster reflects your currently-open sessions.
 `discover` lists each identity with its **live sessions**
@@ -209,8 +209,8 @@ Two sessions on the **same machine** share one identity, so they can talk with
 `peers.json`, because it's the same principal (only the holder of your key can sign
 as it). A session can't address *itself*: it's excluded from `discover` routing and
 an explicit self-target is refused. The session store is in-memory, so it survives sleep
-(same id, drains its queue on wake) and a hard restart just mints a new id to
-re-pick. Full design: [`docs/SESSIONS.md`](docs/SESSIONS.md).
+(same id, drains its queue on wake); a hard restart comes back under a new session id,
+which peers re-pick. Full design: [`docs/SESSIONS.md`](docs/SESSIONS.md).
 
 ## See it without a Claude session
 

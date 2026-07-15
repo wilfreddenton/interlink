@@ -60,11 +60,16 @@ on-disk store would be single-writer contention; in-memory keeps each session
 isolated (and survives sleep, since suspend freezes the process with RAM intact).
 The **bus** is the durable layer. (`INTERLINK_AGENT_DB` is accepted but ignored.)
 
-Then launch each session as a channel:
+Then launch each session with plain `claude`:
 
 ```bash
-claude --mcp-config alice.mcp.json --dangerously-load-development-channels server:interlink
+claude --mcp-config alice.mcp.json
 ```
+
+Delivery is channel-less by default — the plugin's `wait` Stop-hook listener wakes the
+session on incoming messages, no channel flag needed. Native Claude Code channels are
+an opt-in enhancement; the supported way to use them is the plugin install + the
+`interlinked` launcher (see the README), not a hand-wired channel flag.
 
 That's the whole deployment. Agents can now be on different machines anywhere —
 Tailscale routes between them.

@@ -41,8 +41,8 @@ Three small pieces, all in the state dir (`~/.local/state/interlink/`):
 2. **Last-update timestamp** (`last-update`), reset by the MCP whenever it enqueues
    an **outbound** message with `status = update` (or a terminal) for the active
    task. This is the shared timer.
-3. **The `PostToolUse` hook** (bash, shipped in `plugin/hooks/`), which on each
-   tool event:
+3. **The `PostToolUse` hook** (Node, shipped as `plugin/scripts/progress-nudge.js`),
+   which on each tool event:
    - no marker → exit silently (idle / non-collaboration sessions never fire);
    - marker present **and** `now − last_update > INTERVAL` **and**
      `now − last_nudge > INTERVAL` → emit a reminder to the model
@@ -62,7 +62,7 @@ operator dials the chattiness.
 
 - **MCP** (`interlink-mcp`): write/clear the marker on the inbound gate; reset
   `last-update` on outbound `update`/terminal. ~30 lines, no wire change.
-- **Plugin**: a `hooks/hooks.json` + `scripts/progress-nudge.sh`, wired via
+- **Plugin**: a `hooks/hooks.json` + `scripts/progress-nudge.js`, wired via
   `${CLAUDE_PLUGIN_ROOT}` (this re-introduces a hook to the plugin — it went to
   zero when the capability guards were removed; this one is a *nudge*, not a gate).
 - **SKILL / instructions**: unchanged. Prose stays primary; the hook is the floor.

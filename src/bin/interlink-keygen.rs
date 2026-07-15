@@ -43,7 +43,10 @@ fn main() -> Result<()> {
     println!("fingerprint: {}", id.fingerprint());
     println!();
     println!("Share the public key with peers. They add it to peers.json:");
-    println!("  {{ \"your-petname-for-me\": \"{}\" }}", id.to_b64());
+    println!(
+        "  {{ \"your-petname-for-me\": {{ \"key\": \"{}\" }} }}",
+        id.to_b64()
+    );
     Ok(())
 }
 

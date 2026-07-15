@@ -170,10 +170,6 @@ impl PairTable {
         Some(v)
     }
 
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.map.get(key)
-    }
-
     /// Resolve a full key or an exact 8-char fingerprint to `(key, value)`.
     pub fn find(&self, key_or_fp: &str) -> Option<(String, String)> {
         self.map
@@ -414,7 +410,10 @@ mod tests {
     fn pair_table_put_take_and_find() {
         let mut t = PairTable::new(8);
         t.put("aaaabbbbcccc".into(), "desktop".into());
-        assert_eq!(t.get("aaaabbbbcccc"), Some(&"desktop".to_string()));
+        assert_eq!(
+            t.find("aaaabbbbcccc"), // exact full key
+            Some(("aaaabbbbcccc".into(), "desktop".into()))
+        );
         assert_eq!(
             t.find("aaaabbbb"), // exact 8-char fingerprint
             Some(("aaaabbbbcccc".into(), "desktop".into()))

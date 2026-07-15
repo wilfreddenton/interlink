@@ -1,8 +1,9 @@
 //! `interlinked` — launch Claude Code with native interlink channels enabled.
 //!
 //! The default way to use interlink is plain `claude`: the plugin runs in the
-//! channel-less fallback mode (a background `interlink-mcp wait` listener + a Stop
-//! hook), which needs no special flags and works even where channels are blocked.
+//! channel-less mode (the default) — an async Stop-hook `interlink-mcp wait` listener
+//! that delivers inbound to the model — which needs no special flags and works even
+//! where channels are blocked.
 //!
 //! This launcher is only for the *channel* path — when you have Claude Code
 //! development channels available and want the nicer native push. It sets

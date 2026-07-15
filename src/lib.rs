@@ -1,10 +1,11 @@
 //! Agent-to-agent messaging for Claude Code.
 //!
-//! Two Claude Code agents converse by each running a **channel server** — an MCP
-//! server declaring the `claude/channel` capability, which pushes
-//! `notifications/claude/channel` events straight into a live session and
-//! exposes a `reply` tool for the outbound half. A small **bus** routes messages
-//! between them and buffers for agents that are offline.
+//! Two Claude Code agents converse by each running an MCP server: outbound is the
+//! `send_message` tool; inbound is delivered by default to a local inbox that a
+//! background `interlink-mcp wait` listener drains (plain `claude`, no flags), with
+//! native `notifications/claude/channel` push as an opt-in enhancement (`interlinked`
+//! / `INTERLINK_CHANNELS=1`). A small **bus** routes messages between agents and
+//! buffers for agents that are offline.
 //!
 //! ## Trust
 //!

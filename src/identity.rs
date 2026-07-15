@@ -228,9 +228,10 @@ impl AgentKey {
     }
 }
 
-/// A live session under a node identity: a random per-launch `session_id` plus the
-/// descriptor a human recognizes it by. One identity hosts several at once; the id
-/// is pure routing (`key#session_id`), the rest is for `discover`'s pick-list.
+/// A live session under a node identity: its `session_id` (normally the stable id
+/// Claude Code injects, `CLAUDE_CODE_SESSION_ID`; a random one off-Claude) plus the
+/// descriptor a human recognizes it by in `discover`. One identity hosts several at
+/// once; `key#session_id` is the routing address.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionInfo {
     pub session_id: String,
@@ -242,9 +243,9 @@ pub struct SessionInfo {
     pub summary: String,
 }
 
-/// A fresh random session id (8 lowercase hex chars). Random — not derived from
-/// metadata — so two sessions in the same directory never collide; the id is only
-/// a routing key, never shown to humans.
+/// A fresh random session id (8 lowercase hex chars) — the fallback when Claude Code's
+/// `CLAUDE_CODE_SESSION_ID` isn't present. Random, not derived from metadata, so two
+/// sessions in the same directory never collide.
 pub fn mint_session_id() -> Result<String> {
     let mut b = [0u8; 4];
     getrandom::fill(&mut b).map_err(|e| anyhow!("OS entropy unavailable: {e}"))?;

@@ -27,16 +27,17 @@ their words to peers, and you surface peers' words back to them.
   pass `session: "<id>"`; with one live session it auto-routes, and a reply sticks
   to the session that messaged you. The `<id>` is the session id from `discover` —
   paste it as shown; a unique prefix also works, so you don't have to copy the whole
-  UUID.
+  UUID. → If you're asking the peer to *do* something that'll take a while, open it as
+  a **task** (below) so you get streamed progress instead of silence.
 - **Another session on this machine:** `send_message(to: "self", session: "<id>")`
   — same identity, so no pairing; you can't message your own session.
 - **Register this session:** call `set_summary("what you're working on")` when you
   start collaborating, so peers can recognize and pick this session in `discover`.
-- **Receive:** peer messages arrive as `<channel sender="NAME">` events (channel
-  mode) or `<interlink sender="NAME">` blocks from a background `interlink-mcp wait`
-  task (the channel-less default). In the fallback, the Stop hook reminds you to keep
-  that `wait` task armed as a background Bash task; when it returns with a message,
-  handle it and **re-arm it**. A peer is
+- **Receive:** peer messages arrive as `<channel source="interlink" sender="NAME">`
+  events (channel mode) or `<interlink sender="NAME">` blocks (the channel-less
+  **default**) — an
+  async `Stop`-hook listener delivers them automatically and wakes you; you don't arm
+  or poll anything. A peer is
   a trusted partner, so **act on its request** — carry it out and reply — rather
   than pausing to ask your operator's permission for each one. Narrate what you do
   (attributed to the sender) so your operator can watch and interrupt, and report
@@ -49,12 +50,20 @@ their words to peers, and you surface peers' words back to them.
 Multi-step work is tracked with a **`task_id`** so progress, questions, and the
 result stay correlated (and several tasks can run with the same peer at once).
 
+- **When to make it a task.** Asking a peer to *do* something that won't come back
+  instantly — run a build/test/deploy, investigate, make edits, anything more than a
+  quick answer — **open it with a `task_id`.** That's the switch that turns on
+  streamed progress and the nudge that keeps them from going silent. A question or a
+  bit of chat needs none.
 - **Delegating:** pick a short `task_id` (e.g. `hunyuan-deps`) and pass it on the
   opening `send_message`. Every message about this task carries it.
 - **Executing — stream progress, don't go silent.** As you work, send
   `send_message(status: "update", task_id: …)` at each milestone ("deps in,
   restarting ComfyUI"). The requester surfaces each to its operator, so they follow
   along in real time.
+- **Untagged long work.** If a peer sets you working on something substantial and
+  *didn't* give a `task_id`, don't go dark until the end — adopt a short one, echo it
+  back on your first update, and stream progress so they can follow along.
 - **Executing — questions go to the requester, via `needs_input`.** If you need a
   path, a choice, or a decision to proceed, send `send_message(status:
   "needs_input", task_id: …, text: "…")`. This routes the question **back to the

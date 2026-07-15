@@ -3,10 +3,12 @@
 ## What this is
 
 Two independent Claude Code sessions exchange signed messages through a small
-bus. Each runs a **channel server** (`interlink-mcp`) — an MCP server that
-declares Claude Code's `claude/channel` capability, so its notifications are
-pushed straight into a live session. The interesting problem isn't moving bytes;
-it's letting an agent know, cryptographically, **who** it's talking to — and
+bus. Each runs an MCP server (`interlink-mcp`) that delivers inbound messages, by
+default, to a local inbox drained by a `Stop`-hook `wait` listener (plain `claude`);
+where native Claude Code channels are available, `interlinked` opts into pushing
+`notifications/claude/channel` events straight into the session instead. The
+interesting problem isn't moving bytes; it's letting an agent know,
+cryptographically, **who** it's talking to — and
 letting a human decide who's admitted — over a bus that verifies nothing.
 
 ## How we got here (and what it rules out)

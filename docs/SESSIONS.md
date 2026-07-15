@@ -38,14 +38,16 @@ human-gated pairing** (pair with *A* once, then pick one of *A*'s live sessions)
 Identity is unchanged (a node = an Ed25519 key, paired once). A **live session** is
 a new sub-unit under it:
 
-- **Random self-minted `session_id`** at startup. It keys everything: the session
-  polls `key#session_id` (its own inbox) and registers under it. Random, so it is
-  **always collision-free** — two sessions in the same directory never clash.
-  (Deterministic/metadata-derived ids were considered and rejected: no automatic
-  metadata is both stable-across-restart *and* unique-per-session, and cwd-derived
-  ids re-create the same-dir collision.)
-- Humans never see the id — they recognize a session by **cwd + git repo +
-  summary**. The id is pure routing.
+- **`session_id`**, resolved at startup in priority order: an explicit
+  `INTERLINK_SESSION` pin → the id Claude Code injects into the MCP subprocess env
+  (`CLAUDE_CODE_SESSION_ID`, the normal case) → a random id (fallback off-Claude). It
+  keys everything: the session polls `key#session_id` (its own inbox) and registers
+  under it. Being Claude's own id, it is **stable across the server restarts Claude
+  performs within a session** — so a peer's reply always finds the same inbox — and
+  unique per session, so two sessions in the same directory never clash.
+- The id **is** surfaced: `discover` shows it, and you pass it to `send_message`
+  (a unique prefix works). Humans still recognize a session by **cwd + git repo +
+  summary**; `key#session_id` is the routing address.
 
 ## Local store: in-memory
 
@@ -140,16 +142,20 @@ daemon, nothing handles a knock otherwise.
   sleep**, and re-heartbeats. Seamless; no retry needed.
 - **Clean close: immediate.** Graceful unregister tells peers the session is gone,
   so they re-pick right away.
-- **Crash / hard restart: re-pick.** A reopened session is a **new** random id (and
-  cold anyway), so it does not inherit the old inbox. The sender sees the old id
-  never returned and re-picks the peer's new session. (The old inbox's queued
-  messages are the bounded leak, swept later.)
+- **Server restart within a session: same id.** Claude re-spawns the stdio server
+  (config changes, reconnects) but injects the **same** `CLAUDE_CODE_SESSION_ID`, so
+  the new process reattaches to the same bus inbox and drains what queued. Only the
+  in-memory store is cold — the durable queue lives on the bus.
+- **New Claude session: re-pick.** A genuinely new session (you closed and reopened)
+  comes up under a new id, so peers see the old id gone and re-pick the new session.
+  (The old inbox's queued messages are the bounded remnant, swept later.)
 
 ## What changes (code)
 
 - **`identity`** — add `session_id`, `cwd`, `git_root`, `summary` to the signed
   announcement (extend the announce encoding).
-- **`interlink-mcp`** — mint a random `session_id`; **in-memory store always** (drop
+- **`interlink-mcp`** — resolve `session_id` (INTERLINK_SESSION → CLAUDE_CODE_SESSION_ID
+  → random fallback); **in-memory store always** (drop
   the `--db`/`INTERLINK_AGENT_DB` durable path for the agent); poll `key#session_id`
   only (no node inbox); knocks are sent to a target session's inbox; announce on
   startup + heartbeat;
@@ -163,8 +169,8 @@ daemon, nothing handles a knock otherwise.
 
 ## Build order
 
-1. **Random `session_id` + in-memory store + poll `key#session_id` only.**
-   *Fixes the crash and the fan-out on its own* — ship first.
+1. **Stable `session_id` (CLAUDE_CODE_SESSION_ID, random fallback) + in-memory store +
+   poll `key#session_id` only.** *Fixes the crash and the fan-out on its own* — ship first.
 2. Session-scoped signed announcement + roster grouping; `discover` renders
    sessions; `set_summary`; register-on-start; graceful unregister.
 3. `session` arg + auto-route-if-one; `reply_to` stickiness; the recovery behavior

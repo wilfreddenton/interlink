@@ -9,8 +9,8 @@
 use std::fmt;
 
 /// An inbox address: a base64 identity `key`, optionally scoped to a `session`.
-/// Keys are base64 and session ids are hex, so neither contains `#` — the single
-/// separator is unambiguous.
+/// Keys are base64 and session ids are UUIDs (hex/hyphen), so neither contains `#` —
+/// the single separator is unambiguous.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
     pub key: String,
@@ -47,11 +47,6 @@ impl Route {
             _ => Route::bare(s),
         }
     }
-
-    /// The session scope, if any.
-    pub fn session(&self) -> Option<&str> {
-        self.session.as_deref()
-    }
 }
 
 impl fmt::Display for Route {
@@ -72,21 +67,25 @@ mod tests {
         let r = Route::new("KEY", "s12");
         assert_eq!(r.to_string(), "KEY#s12");
         assert_eq!(Route::parse("KEY#s12"), r);
-        assert_eq!(r.session(), Some("s12"));
+        assert_eq!(r.session.as_deref(), Some("s12"));
     }
 
     #[test]
     fn empty_session_is_bare() {
         assert_eq!(Route::new("KEY", ""), Route::bare("KEY"));
         assert_eq!(Route::new("KEY", "").to_string(), "KEY");
-        assert_eq!(Route::parse("KEY").session(), None);
-        assert_eq!(Route::parse("KEY#").session(), None, "trailing # is bare");
+        assert_eq!(Route::parse("KEY").session.as_deref(), None);
+        assert_eq!(
+            Route::parse("KEY#").session.as_deref(),
+            None,
+            "trailing # is bare"
+        );
     }
 
     #[test]
     fn parse_splits_on_the_separator() {
         let r = Route::parse("KEY#abcd");
         assert_eq!(r.key, "KEY");
-        assert_eq!(r.session(), Some("abcd"));
+        assert_eq!(r.session.as_deref(), Some("abcd"));
     }
 }
