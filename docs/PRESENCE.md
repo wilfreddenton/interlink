@@ -166,12 +166,14 @@ continuity never silently hides that a live option was available.
   close; additive. Bonus interaction: a received goodbye lets the peer **clear its sticky
   pointer** for that session immediately, so it stops preferring a now-gone session
   instead of waiting to notice it's `gone` on the next send.
-- **End-to-end acknowledgment** — recipient signs an ACK on receipt; `message_status`
-  then shows "acknowledged by peer" vs. "sent to bus only." This is the mature answer to
-  "did my message land?" for *all* causes (closed/asleep/slow collapse to "unacked"), and
-  fits interlink's signed-message + `reply_to` model. Heavier; a separate effort. Note:
-  it too cannot distinguish slept from killed — only elapsed time can, and that's a
-  guess.
+- **End-to-end acknowledgment — considered and dropped.** A recipient-signed ACK
+  (`message_status` showing "acknowledged by peer" vs. "sent to bus only") was weighed
+  as the answer to "did my message land?", but it's largely redundant here: the
+  three-tier send feedback already flags live/away/gone *at send time*, a reply is
+  itself an ack for conversation, and delegated tasks carry richer `update`/`result`/
+  `failed` status. It also can't distinguish slept from killed (both sit "unacked"
+  until a timeout). Revisit only if one-way fire-and-forget delivery receipts become a
+  real need.
 
 ## Rationale, in one line
 

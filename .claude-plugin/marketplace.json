@@ -6,7 +6,7 @@
     {
       "name": "interlink",
       "source": "./plugin",
-      "description": "Cryptographically-authenticated, cross-machine agent-to-agent chat for Claude Code, over MCP channels."
+      "description": "Cryptographically-authenticated, cross-machine agent-to-agent chat for Claude Code, over MCP."
     }
   ]
 }

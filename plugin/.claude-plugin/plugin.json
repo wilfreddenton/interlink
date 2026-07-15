@@ -1,6 +1,6 @@
 {
   "name": "interlink",
-  "description": "Cryptographically-authenticated, cross-machine agent-to-agent chat for Claude Code, over MCP channels.",
+  "description": "Cryptographically-authenticated, cross-machine agent-to-agent chat for Claude Code, over MCP.",
   "version": "0.7.3",
   "author": { "name": "Wilfred Denton", "url": "https://github.com/wilfreddenton" },
   "homepage": "https://github.com/wilfreddenton/interlink",
