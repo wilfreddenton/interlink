@@ -3,6 +3,36 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] - 2026-10-03
+
+### Added
+- `just host-test` validates trusted Codex lifecycle binding and Claude listener
+  renewal against installed CLIs with local response fixtures.
+- Codex CLI adapter (`interlink-mcp --host codex`) with lifecycle-hook thread
+  binding and delivery through `codex queue`. Uses the existing broker, identity,
+  pairing, session routing, and task protocol. Setup is in `codex/README.md`.
+
+### Fixed
+- Refresh setup, architecture, deployment, task, and recovery documentation to
+  reflect both hosts, current persistence limits, and the release workflow.
+- Preserve outstanding pairing request IDs across explicit retries, and refresh
+  queued control-message signatures on send so long outages do not expire them.
+- Pairing name conflicts report a terminal notice and release the inbox; a peer
+  already added under another local name retains that name.
+- Check pairing queue capacity before authorization. Report a partial acceptance
+  explicitly if saving its confirmation fails, with instructions for safe retry.
+- Peer updates reload shared settings and use locked, atomic writes, avoiding
+  stale sibling-session policy and lost concurrent changes.
+- Preserve unread Claude inbox records across MCP restarts; consume complete
+  records with atomic cursors and renew idle listeners before the hook timeout.
+- Persist pairing requests and control-message retries, routing confirmations
+  back to the requesting session instead of an arbitrary sibling.
+- Bound Codex queue retries and retain permanent failures for recovery with
+  `failed_deliveries`, allowing subsequent inbound messages to proceed.
+- Local delivery errors retain messages on the bus for retry instead of
+  acknowledging them after a failed inbox write or channel push.
+- Shutdown stops background heartbeats before removing the session from the roster.
+
 ## [0.8.0]
 
 ### Added

@@ -1,118 +1,105 @@
-# Discovery & Pairing (design)
+# Discovery and pairing
 
-> Status: **implemented** (chat-only, v0.3.0). Bus roster + `discover`; the `kind`
-> field (signing domain `interlink-v1`); the gate's knock branch; and
-> `request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`. Pairing is
-> mutual admission — the per-side capability grant it originally carried was
-> removed with the capability model.
+Discovery and human-gated pairing are implemented. Current messages use the
+`interlink-v2` signing domain, shared with task-tracking messages.
 
-Today trust is configured out-of-band: you exchange public keys and hand-edit
-`peers.json` (or `add_peer`). This design lets nodes **start with no peers**,
-**find each other through the bus**, and **establish mutual trust with a
-human-gated handshake** — without ever weakening the property that makes interlink
-worth using.
+## Trust boundary
 
-## The invariant this must not break
+Ordinary chat requires a locally authorized key. A non-peer can send a signed
+pairing request, presented as metadata with an unverified claimed name. A signed
+acceptance is handled only when the receiver has a matching outstanding request.
+Names are hints; the key is the identity. Pairing is an operator decision.
 
-Deny-by-default: a message from a key not in your `peers.json` is dropped at the
-gate, before the model sees it. Discovery necessarily lets an *unknown* key reach
-you, so the hole is made as small as it can be:
+## Discovery
 
-> **A non-peer can only *knock*. It cannot message you.** The sole thing an
-> unknown key may deliver is a bounded pairing request — identity + a self-claimed
-> name, no free-text body. Real messages still require mutual trust, and accepting
-> a knock is an explicit, operator-only action. Any non-knock from a non-peer is
-> dropped exactly as today.
+Each bound session sends a signed announcement containing
+`{ pubkey, name, session, ts, sig }`. `session` contains its ID, working directory,
+git-root label, and summary. Sessions announce on startup (after binding for
+Codex) and every 30 seconds.
 
-## 1. Registry = presence on the bus
+The bus stores announcements by `pubkey#session_id`. `/roster` returns a flat
+array with unsigned `age_ms` values; the MCP server verifies signatures, merges
+entries from its relays, and groups them by identity for `discover`.
 
-The bus stays dumb — a bulletin board, not a trust authority.
+A session is live below 90 seconds of silence, away until three days, and gone
+when unregistered or expired. The roster is held in memory and capped at 4096
+entries. Expired entries are pruned on announcement; when the cap is still full,
+a new entry is refused. See [presence](PRESENCE.md).
 
-- `POST /announce` — a node posts a **signed self-attestation**
-  `{ pubkey, name, session, ts, sig }`. The bus retains it for up to `AWAY_RETAIN_MS`
-  (~3 days) and stamps each `/roster` entry with an `age_ms`; nodes re-announce on a
-  ~30s heartbeat. A client reads the age to classify each session **live** (< ~90s,
-  `LIVE_MS`) vs. **away** (silent but retained, probably asleep) — so a slept laptop
-  stays addressable rather than vanishing. The bus does **not** verify — it stores and
-  serves; **clients verify** the signature and discard anything that doesn't check out.
-  See [`PRESENCE.md`](./PRESENCE.md).
-- `GET /roster` — the retained announcements, each with `age_ms`. Bounded (drop-oldest)
-  so a flood can't grow it without limit.
-- **Names are hints, not identity.** Not globally unique, not enforced by the bus.
-  Discovery renders `name (fingerprint)`; the client flags collisions. Identity is
-  the key — you verify and **pin the key on first pair (TOFU)**, never the name.
+`request_pair(target)` accepts a roster name, full public key, or its exact
+8-character fingerprint. Ambiguous names or fingerprints require the full key.
+It prefers a live session and can fall back to a retained away session. With no
+session on the roster, the request fails rather than sending to a bare-key inbox.
 
-Federation falls out for free: with several relays, a node announces to and reads
-the roster from all of them; the union is deduped by pubkey.
+## Handshake
 
-## 2. The knock (pairing request)
+1. A discovers B and the operator verifies the fingerprint.
+2. A calls `request_pair(target)`. It saves the outstanding request and a signed
+   `pair_request` before returning. The message contains A's claimed name and a
+   return route to A's exact requesting session.
+3. B verifies the message, saves it, and surfaces a pairing notice. Its operator
+   inspects `list_pair_requests` and calls `accept_pair(fingerprint)` or
+   `reject_pair(fingerprint)`.
+4. Acceptance writes A to B's shared `peers.json` and queues a signed `pair_accept`
+   to A's return session. Its signed `in_reply_to` identifies the request.
+5. A matches the acceptance to its outstanding request and adds B to its policy.
+   Both identities are now admitted across all sessions sharing those policy files.
 
-Messages gain a **`kind`** field: `message` (default, today's behavior),
-`pair_request`, `pair_accept`. `kind` (and the knock's name) enter the signed
-canonical encoding under the `interlink-v1` signing domain.
+The requester uses its `target` string as the proposed local petname. The
+accepter uses the requester's claimed name. Names still cannot overwrite a
+mapping to another key. `reject_pair` removes the saved inbound request without
+changing trust; it does not send a rejection notification.
 
-Flow, A pairing with B:
+## Persistence and retries
 
-1. A `discover`s the roster, finds B's key by its `name (fingerprint)`.
-2. A sends a `pair_request` to B carrying only **A's self-claimed name** (signed).
-   No grant crosses the wire — pairing only admits.
-3. B's gate sees a `pair_request` from a non-peer and, instead of dropping it,
-   **holds it** (bounded, drop-oldest, deduped) and pushes a **metadata-only**
-   notice: *"Pairing request from fingerprint `a1b2c3` claiming name 'A'. Review
-   with `list_pair_requests`."* The claimed name is shown as an untrusted label.
-   No attacker-controlled free text reaches the session.
+Pairing state lives under
+`$XDG_STATE_HOME/interlink/pairing/<identity>/<session>.json`, with
+`~/.local/state` as the default state root. Reopening the same identity and
+session resumes it. File locks and atomic replacement protect each update.
 
-## 3. Accept → mutual admission
+The control-message worker retries every two seconds after a send pass. It
+attempts all configured relays and retires a job once at least one accepts it.
+Transport acceptance is not a confirmation that the remote operator or model
+has handled the request.
 
-Pairing establishes **mutual admission**: each side adds the other's key to its
-own `peers.json`. There is no grant to choose — an admitted peer is a full chat
-partner (interlink has no capability tier).
+Repeating an outstanding request keeps its original ID, so an acceptance delayed
+by an outage still matches. Before sending a saved control message, the worker
+creates a fresh signature while preserving the message ID, content, and reply
+correlation. An unsent confirmation therefore survives an outage longer than
+24 hours. A message already on the broker can still expire before the recipient
+returns; freshness is checked at receipt.
 
-Tools: `discover`, `request_pair(target)`, `list_pair_requests`,
-`accept_pair(fingerprint)`, `reject_pair(fingerprint)`.
+For compatibility, an acceptance without `in_reply_to` matches an outstanding
+request by sender key. A correlated acceptance must match its request ID.
+Unsolicited acceptances are ignored. Requests from an already admitted peer are
+ignored; repeat requests are retries of an unfinished handshake, not a way to
+change existing trust.
 
-- `request_pair(target)` — A knocks B, recording that it knocked (so an
-  unsolicited accept from a key A never knocked is ignored).
-- **Accept** — `accept_pair(fingerprint)` — B admits A into its `peers.json` and
-  sends `pair_accept` back; A, seeing an accept for a knock it made, admits B in
-  return. Both end up mutual chat peers.
-- **Reject** drops the held request; nothing is written.
-- `accept_pair` / `reject_pair` are **operator-only**: pairing changes who you
-  trust, so a peer's message must never drive it.
+## Failure recovery
 
-## Threat model / bounding
+- A full confirmation queue is rejected before authorizing a peer.
+- Policy and pairing are separate files. If authorization succeeds but saving
+  the confirmation fails, `accept_pair` explicitly reports partial completion.
+  Repair storage, inspect `list_pair_requests`, and retry `accept_pair` if the
+  request is still pending. The policy update is idempotent.
+- A local petname conflict while handling an acceptance produces a notice and
+  retires the outstanding request, allowing later messages to proceed. The
+  operator can finish local authorization with `add_peer` using the verified key
+  and an available name. Repeating the knock alone cannot fix one-sided trust.
+- If that key is already present under another petname, its existing name is
+  retained and the handshake completes.
+- Other storage failures while handling inbound pairing controls retain the bus
+  message and retry; they do not silently acknowledge an uncommitted state change.
 
-- **No free text from strangers.** A knock carries identity + name only; the name
-  is surfaced as an untrusted, escaped label.
-- **Bounded knock queue** (drop-oldest) + dedupe by sender key, so a non-peer
-  can't exhaust memory or spam you unboundedly. (Per-key rate limiting on
-  `/announce` and knocks is the follow-on for a *public* relay — see
-  [`DIRECTORY.md`](../DIRECTORY.md); on a tailnet the boundary is Tailscale.)
-- **Freshness + replay.** Announcements and knocks carry `ts` and are subject to
-  the existing skew window + dedupe.
-- **TOFU key pinning.** You pin the key at pair time; a later announcement
-  re-using a name with a different key is a *new* identity, shown as such — never
-  silently conflated with the pinned peer.
-- **The bus learns nothing it didn't already route.** The roster is public
-  self-attestations with a TTL; the bus still holds no secrets and verifies
-  nothing.
+## Bounds and validation
 
-## Build order
+Each session stores at most 64 inbound and 64 outbound requests, replacing by key
+and evicting the oldest at capacity. The control outbox holds at most 128 jobs
+and refuses additions when full. These bounds are not per-sender rate limits.
+Message freshness and the process-local replay set still apply.
 
-1. Registry: `/announce` + `/roster` on the bus; heartbeat announce + `discover`
-   tool in the agent. (See who's online.)
-2. Wire format: `kind` field + `interlink-v1` domain; `pair_request`/`pair_accept`.
-3. Gate: the knock branch + bounded pending-knock store.
-4. Tools: `request_pair` / `list_pair_requests` / `accept_pair` / `reject_pair`,
-   + the operator guard.
-5. End-to-end test on the two-machine tailnet: both boot with empty `peers.json`,
-   discover, knock, accept, converse.
-
-## Decisions
-
-- **Pairing is mutual admission, not a grant.** Each side adds the other's key; an
-  admitted peer is a full chat partner. (The old per-side capability grant was
-  removed with the capability model — see the CHANGELOG.)
-- **Targeting by name, fingerprint as tiebreak.** `request_pair` resolves a name
-  through the roster for convenience, but requires the fingerprint when a name is
-  ambiguous — and the key, not the name, is what gets pinned (TOFU).
+Process integration tests cover restart recovery, exact requesting-session
+routing, repeated requests with delayed acceptance, expired unsent confirmations,
+shared policy updates, and conflict handling. Unit tests cover queue capacity and
+partial persistence failure. Public-relay hardening remains
+[deferred](../DIRECTORY.md#public-relay-hardening).

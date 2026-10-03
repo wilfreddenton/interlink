@@ -1,0 +1,42 @@
+# Merge these sections into ~/.codex/config.toml, then review them in /hooks.
+# Install Interlink 0.9.0 or newer first.
+[mcp_servers.interlink]
+command = "interlink-mcp"
+args = ["--host", "codex"]
+
+# For a remote bus or non-default identity paths, add:
+# [mcp_servers.interlink.env]
+# INTERLINK_URL = "http://your-bus:9440"
+# INTERLINK_KEY = "/absolute/path/to/id.key"
+# INTERLINK_PEERS = "/absolute/path/to/peers.json"
+
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "mcp_tool"
+server = "interlink"
+tool = "bind_codex_session"
+input = { thread_id = "${session_id}" }
+
+# SessionStart can precede MCP readiness. These idempotent fallbacks bind once
+# the connection is available, including after an MCP server restart.
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "mcp_tool"
+server = "interlink"
+tool = "bind_codex_session"
+input = { thread_id = "${session_id}" }
+
+[[hooks.PreToolUse]]
+matcher = "^mcp__interlink__"
+[[hooks.PreToolUse.hooks]]
+type = "mcp_tool"
+server = "interlink"
+tool = "bind_codex_session"
+input = { thread_id = "${session_id}" }
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "mcp_tool"
+server = "interlink"
+tool = "bind_codex_session"
+input = { thread_id = "${session_id}" }

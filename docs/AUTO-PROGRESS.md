@@ -1,81 +1,49 @@
-# Auto-progress: a debounced nudge hook (design)
+# Automatic progress reminders
 
-> Status: **implementing** (0.4.1). Additive and **wire-compatible with 0.4.0** —
-> no protocol/domain change; a `PostToolUse` hook plus a local state file.
-
-## Why
-
-0.4.0 makes progress updates *structured* and *more likely*, but they're still
-model-driven: a heads-down agent can go silent mid-task. We want a reliable floor
-without spam. A hook that *sends* updates would be spammy and dumb (a shell script
-can't judge what's notable). So the hook **nudges**, and the model **sends**:
-
-- **Cadence** is the hook's job (deterministic, reliable).
-- **Content** is the model's job (it writes "deps in, restarting ComfyUI").
-
-## Two layers, one shared timer
-
-- **Prose (primary, unchanged):** the SKILL / server instructions say "update at
-  each milestone." Well-timed, semantic — but unreliable.
-- **Hook (backstop floor):** fires only when an active task has gone quiet longer
-  than an interval. It injects a reminder; the model composes and sends.
-
-They don't double up because **any outgoing update resets the timer** — model- or
-hook-prompted. A well-behaved agent updating at milestones keeps resetting the
-clock, so the hook never trips; the hook only speaks in the *gaps*. Well-behaved →
-hook silent. Silent agent → guaranteed heartbeat.
+Implemented since 0.4.1, this Claude Code plugin hook reminds the model to report
+progress on a peer's task. It does not send messages itself or guarantee that the
+model will respond. Codex uses the shared task protocol and server instructions,
+but this hook is not installed by the Codex adapter.
 
 ## Mechanism
 
-Three small pieces, all under a **per-session** state dir
-(`~/.local/state/interlink/task/<session_id>/`) — scoped by session so two sessions on
-one machine never read each other's marker. The server keys it by its own session id;
-the hook derives the same path from the `session_id` in its `PostToolUse` stdin payload:
+The MCP server writes a best-effort marker when an inbound message has `task_id`
+and no status. The marker contains `{ task_id, peer, since }`. A status-free reply
+with a task ID can also set it; this is a heuristic, not a task scheduler.
 
-1. **Current-task marker** (`current-task.json` = `{ task_id, peer, since }`),
-   written/cleared by the MCP server so the hook knows whether a task is running
-   and who to update. The rule for "I am the executor of this task":
-   - An **inbound** message with a `task_id` and **no `status`** is an *opening
-     request* → I'm now executing it → write the marker `(task_id, sender)`.
-     (Progress/result messages carry a `status`, so they don't (re)arm it — that's
-     what distinguishes "someone asked me" from "someone's reporting to me.")
-   - Cleared when I send a **terminal** status (`result`/`failed`) for that
-     `task_id`, or receive a `canceled` for it.
-2. **Last-update timestamp** (`last-update`), reset by the MCP whenever it enqueues
-   an **outbound** message with `status = update` (or a terminal) for the active
-   task. This is the shared timer.
-3. **The `PostToolUse` hook** (Node, shipped as `plugin/scripts/progress-nudge.js`),
-   which on each tool event:
-   - no marker → exit silently (idle / non-collaboration sessions never fire);
-   - marker present **and** `now − last_update > INTERVAL` **and**
-     `now − last_nudge > INTERVAL` → emit a reminder to the model
-     ("You're executing task '<id>' for <peer> and haven't updated in >Ns — send a
-     brief `send_message(status:'update', task_id:'<id>')` on what you just did"),
-     and stamp `last-nudge`;
-   - else → exit silently.
-   - Optional tool gate: only count `Bash`/`Edit`/`Write` events toward the timer,
-     so a flurry of `Read`s doesn't trip it.
+State is scoped to the session under
+`$XDG_STATE_HOME/interlink/task/<session_id>/`, defaulting to
+`~/.local/state/interlink/task/<session_id>/`:
 
-## Config
+| File | Purpose |
+|---|---|
+| `current-task.json` | Most recently marked task and peer |
+| `last-update` | Timestamp reset on a new marker or an outgoing update/terminal status |
+| `last-nudge` | Timestamp of the last reminder |
 
-`INTERLINK_PROGRESS_INTERVAL` seconds (default **60**); `0` disables the hook. The
-operator dials the chattiness.
+The plugin's `PostToolUse` hook matches `Bash`, `Edit`, and `Write`. On one of those
+events, [progress-nudge.js](../plugin/scripts/progress-nudge.js) checks for a marker
+and whether both the last update and last nudge are older than the interval. It
+then emits `additionalContext` asking the model to send an attributed progress
+update, and stamps `last-nudge`.
 
-## What ships (0.4.1)
+The hook derives its session ID from its JSON stdin payload. The server and hook
+must use the same state directory. `INTERLINK_PROGRESS_INTERVAL` is measured in
+seconds, defaults to 60, and is disabled by zero, negative, or invalid values.
 
-- **MCP** (`interlink-mcp`): write/clear the marker on the inbound gate; reset
-  `last-update` on outbound `update`/terminal. ~30 lines, no wire change.
-- **Plugin**: a `hooks/hooks.json` + `scripts/progress-nudge.js`, wired via
-  `${CLAUDE_PLUGIN_ROOT}` (this re-introduces a hook to the plugin — it went to
-  zero when the capability guards were removed; this one is a *nudge*, not a gate).
-- **SKILL / instructions**: unchanged. Prose stays primary; the hook is the floor.
+## Clearing and limits
 
-## Deferred
+Sending a terminal status (`result`, `failed`, or `canceled`), receiving a
+`canceled` message, or using `cancel_task` clears a matching task marker. The
+match is by task ID. Outgoing updates and terminal statuses reset the session's
+shared timer even if they concern another task.
 
-- **Cross-restart persistence.** The marker is best-effort in-session; a session
-  restart loses "I was executing X" (overlaps tranche-B durable task state in
-  [`docs/TASKS.md`](TASKS.md)). Fine for the floor — worst case the nudge stops
-  after a restart until the next task message re-arms it.
-- **Semantic filtering** ("only report interesting actions") — deliberately not
-  attempted; that's the model's job (it composes the update), the hook only sets
-  the beat.
+There is only one marker per session. A later task replaces an earlier one, so
+this is a reminder for recent work rather than a complete multi-task tracker.
+No matching tool event means no hook invocation; an idle or blocked model does
+not receive a periodic timer wake from this hook.
+
+Marker files can survive a restart, but they are not reconciled with the host's
+actual task state and can be stale. File writes are best-effort. Reliable durable
+blocked-task state, per-task timers, and semantic progress filtering remain
+separate work. See [task tracking](TASKS.md).
