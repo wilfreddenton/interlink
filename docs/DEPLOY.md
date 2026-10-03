@@ -1,145 +1,126 @@
 # Deploying interlink
 
-Only the **bus** needs deploying. Each `interlink-mcp` runs locally next to
-its Claude Code session (Claude Code spawns it as an MCP server), so "deploy"
-means "put a bus somewhere every agent can reach."
+Run one bus somewhere all participating machines can reach. Each Claude Code or
+Codex CLI session runs its own local `interlink-mcp`; the agent is started by its
+host, not deployed as a shared daemon.
 
-## Recommended: your own machines over Tailscale
+Install Interlink 0.9.0 or newer for Codex support and the persistence fixes:
+`cargo install interlink-mcp --version 0.9.0 --locked`. The npm/plugin path is
+documented separately in [the plugin guide](../plugin/README.md).
 
-For a trusted mesh — machines whose keys you hold, using `"*"` peers — this is
-the right deployment. Tailscale gives you a private WireGuard network, so the bus
-is reachable only by *your* devices and the wire is encrypted. That preserves the
-same trust model interlink was designed around (only trusted peers can reach the
-bus), with **no code changes and no public exposure** — which is exactly why you
-don't need the public-relay hardening (signed-recv, E2E) for this setup.
+## Private-network setup
 
-Note interlink speaks **plain HTTP** on purpose (no TLS in the binary — that's
-what keeps it pure-Rust/static). Over Tailscale that's fine: WireGuard already
-encrypts everything. So use plain HTTP over the tailnet — *not* `tailscale serve`,
-which would front it with HTTPS the agent can't consume.
+The broker and agent speak plain HTTP. Use loopback when all agents share a
+machine. For different machines, use a trusted private network such as Tailscale,
+and restrict port 9440 to the participating devices. The broker has no transport
+authentication, so network reachability is its boundary for queue access.
 
-### 1. Put every machine on one tailnet
-
-Install Tailscale on each machine (the bus host and every agent host) and
-`tailscale up`. Enable **MagicDNS** so machines get names like
-`busbox.your-tailnet.ts.net`.
-
-### 2. Run the bus on one always-on machine
-
-Bind it to the **Tailscale interface only** so it's never exposed on the public
-internet or your LAN — the bus has no auth of its own, so its reachability *is*
-its security boundary:
+On a Tailscale-connected broker host:
 
 ```bash
-interlink-bus --addr "$(tailscale ip -4):9440"
+mkdir -p ~/.local/state/interlink
+interlink-bus --addr "$(tailscale ip -4):9440" --db ~/.local/state/interlink/bus.redb
 ```
 
-(Or `--addr 0.0.0.0:9440` if the host has no public inbound — e.g. a laptop or a
-home server behind NAT. The bus logs a warning on any non-loopback bind; that's
-expected here, the tailnet is the trust boundary.)
+For a single machine, omit `--addr` to bind `127.0.0.1:9440`. The non-loopback
+warning is expected for a private-network bind. Avoid binding all interfaces
+unless firewall rules provide the intended restriction.
 
-### 3. Point each agent at it
+`--db` / `INTERLINK_DB` makes the broker queue persistent. Omitting it creates an
+in-memory broker whose backlog is lost on restart. `--queue-cap` /
+`INTERLINK_QUEUE_CAP` defaults to 1024 messages per recipient, with oldest-first
+eviction. Create the database's parent directory before starting the broker.
 
-In each agent's `.mcp.json`, set `INTERLINK_URL` to the bus's MagicDNS name:
+Signatures authenticate messages but do not encrypt them. Private-network
+transport can protect traffic in transit; the broker still sees plaintext. The
+agent has no HTTPS support, so an HTTPS-only reverse proxy is not compatible
+without changes to the transport.
 
-```json
-{ "mcpServers": { "interlink": {
-  "command": "/path/to/interlink-mcp",
-  "env": {
-    "INTERLINK_KEY":      "/path/to/alice.key",
-    "INTERLINK_PEERS":    "/path/to/alice-peers.json",
-    "INTERLINK_URL":      "http://busbox.your-tailnet.ts.net:9440"
-  }
-} } }
-```
+## Configure the agents
 
-The agent's own store — its outbound queue and the conversation log queried by
-`message_status`, `conversation_history`, and `list_pending` — is **always
-in-memory**. Every Claude session spawns its own `interlink-mcp`, so a shared
-on-disk store would be single-writer contention; in-memory keeps each session
-isolated (and survives sleep, since suspend freezes the process with RAM intact).
-The **bus** is the durable layer. (`INTERLINK_AGENT_DB` is accepted but ignored.)
+Create a key and an initially empty `peers.json` on each participating identity,
+following the [main setup guide](../README.md#install). Reuse the same key and
+policy for sessions that should share one identity.
 
-Then launch each session with plain `claude`:
+For Claude Code, install the plugin and set the relay URL before launching:
 
 ```bash
-claude --mcp-config alice.mcp.json
+export INTERLINK_URL=http://busbox.your-tailnet.ts.net:9440
+claude
 ```
 
-Delivery is channel-less by default — the plugin's `wait` Stop-hook listener wakes the
-session on incoming messages, no channel flag needed. Native Claude Code channels are
-an opt-in enhancement; the supported way to use them is the plugin install + the
-`interlinked` launcher (see the README), not a hand-wired channel flag.
+The plugin supplies both the MCP registration and the Stop listener. Adding only
+an MCP server with `claude --mcp-config` does not install the listener needed for
+default inbound delivery. Use the [plugin guide](../plugin/README.md) for local
+checkout testing and the optional `interlinked` native-channel launcher.
 
-That's the whole deployment. Agents can now be on different machines anywhere —
-Tailscale routes between them.
+For Codex CLI, merge [codex/config.toml](../codex/config.toml) into its config,
+including the lifecycle hooks, and add the remote URL to that server's env table:
 
-## Sleep, reboot, and reconnection
-
-If the bus runs on a laptop that sleeps or shuts down, nothing needs babysitting:
-
-- **`interlink-mcp` reconnects on its own.** Each agent's long-poll retries forever
-  with backoff; a vanished bus is not an error it treats as fatal, so it never
-  crashes and it resumes the moment the bus is reachable again. It dials a fresh
-  connection each poll (no keep-alive), so a socket that went stale across a
-  sleep/wake is never reused. Verified end to end: kill the bus mid-poll, restart
-  it, and the next message is delivered — no restart of the agent needed.
-- **The bus doesn't crash when an agent disconnects.** A dropped long-poll is
-  just a dropped request; the bus holds no per-connection state.
-- **Auto-start the bus on boot** with the included user service:
-  [`contrib/interlink-bus.service`](contrib/interlink-bus.service) (`systemctl --user
-  enable --now interlink-bus`, plus `loginctl enable-linger` to start before login).
-  `Restart=always` also brings it back if it ever dies. On *sleep/wake* the
-  process is only frozen and thaws by itself — systemd isn't involved.
-
-- **The bus queue is durable** (give it `--db` / `INTERLINK_DB`): it holds a message
-  until the recipient acks it, so a bus restart loses nothing queued for an offline
-  agent. Delivery is at-least-once; the receiver dedupes by `msg_id`, so a
-  redelivered message is harmless. The **agent** side is in-memory — it survives
-  sleep (frozen RAM) but not a hard restart, so a message queued *while the bus was
-  unreachable* is the only loss window, and even that survives sleep. The bus is the
-  durable layer by design; the agent stays in-memory so concurrent sessions on one
-  machine don't collide on a single store.
-
-One honest caveat:
-
-- **Claude Code sessions aren't daemons.** After a full shutdown you relaunch your
-  sessions yourself; when you do, `interlink-mcp` reconnects to the bus
-  automatically. Only the bus auto-starts.
-
-## Federation later — just add a URL
-
-`INTERLINK_URL` is a **comma-separated list**. To remove the single-point-of-failure,
-run a second bus on another machine and list both on every agent:
-
-```
-INTERLINK_URL=http://busbox.your-tailnet.ts.net:9440,http://backup.your-tailnet.ts.net:9440
+```toml
+[mcp_servers.interlink.env]
+INTERLINK_URL = "http://busbox.your-tailnet.ts.net:9440"
 ```
 
-The agent then **polls and sends to both**, and its dedupe (by `msg_id`)
-collapses the duplicate so Claude sees each message once. No consensus, no
-inter-relay sync — the redundancy is entirely client-side, the Nostr "outbox"
-pattern. This is verified end to end; see the two-relay test.
+Review and trust the binding hooks, then send a prompt. Follow the complete
+[Codex setup guide](../codex/README.md); the Claude plugin does not configure Codex.
 
-The natural next step beyond a shared relay set (each agent choosing its *own*
-inbox relays, so strangers can join) needs the public-relay hardening —
-signed-`recv`, rate limits, and end-to-end encryption — described in `DESIGN.md`
-and the deployment discussion. Not required for a trusted mesh.
+## Start the bus automatically
 
-## Public hosting (if you outgrow the mesh)
+From the repository root on a systemd host:
 
-If some agents live on machines you don't control, you need a public bus — and
-first the hardening above, so an open relay is safe. Then a blind, authenticated
-relay can run anywhere untrusted:
+```bash
+mkdir -p ~/.config/systemd/user
+cp contrib/interlink-bus.service ~/.config/systemd/user/
+```
 
-- **Oracle Cloud "Always Free" ARM VM** — genuinely free and always-on; run the
-  binary, put Caddy in front for HTTPS. Watch for idle-reclamation (keep some
-  utilization or switch to pay-as-you-go, which keeps the VM free).
-- **Google Cloud Run** — free at this traffic; accept a cold start after idle.
-- **Your own box + Cloudflare Tunnel** — free HTTPS, no inbound ports.
-- **Fly.io / Railway** — ~$2–5/mo if you want no-caveats managed always-on.
+Edit `ExecStart` in the copied file for your binary path and private-network
+address. Its default binds loopback and uses a persistent database. Then:
 
-The 25-second long-poll is the constraint that rules out most serverless free
-tiers and short-timeout proxies (including Tailscale Funnel's HTTP mode); pick a
-platform without a sub-30s request timeout, or move the transport to SSE/WebSocket
-first.
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now interlink-bus
+loginctl enable-linger "$USER"
+```
+
+The [service file](../contrib/interlink-bus.service) creates its state directory
+and restarts the broker if it exits. Lingering allows the user service to start
+without an interactive login. Host sessions themselves must still be launched or
+resumed by the operator.
+
+## Reconnection and recovery
+
+Agent polling retries after connection failures. Suspending a process preserves
+its in-memory state; a process restart does not. The ordinary agent outbox,
+conversation history, replay set, and sticky routes are in memory, even if
+`INTERLINK_AGENT_DB` is set. That old option is accepted but ignored.
+
+Peer policy, pairing state, Claude inboxes, and Codex saved failures use separate
+local files. Reopening the same session and state directory recovers them. A new
+host session does not automatically inherit another session's pending messages.
+See [sessions](SESSIONS.md) and [delivery](DELIVERY.md) for storage paths and limits.
+
+Durable broker queues do not imply unlimited delivery: overflow drops oldest
+messages, freshness checks reject messages older than 24 hours, and host handoffs
+lack end-to-end consumption acknowledgments. Broker presence is always in memory
+and rebuilds as agents announce after restart.
+
+## Multiple relays
+
+`INTERLINK_URL` accepts a comma-separated list:
+
+```text
+http://busbox.your-tailnet.ts.net:9440,http://backup.your-tailnet.ts.net:9440
+```
+
+Agents announce to and poll every relay, and attempt each relay on send. A send
+is considered accepted when at least one relay accepts; failures on other relays
+are not retried after that. Receivers deduplicate by message ID within a bounded,
+process-local replay set. Relays do not synchronize with one another.
+
+## Public hosting
+
+The current unauthenticated broker is not a public-relay service. Public access
+requires authenticated queue operations, resource limits, and, if the relay
+operator is untrusted, end-to-end encryption. Hosting behind TLS alone does not
+supply these properties. See [deferred hardening](../DIRECTORY.md#public-relay-hardening).

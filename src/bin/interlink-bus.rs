@@ -1,9 +1,8 @@
 //! The bus: routes signed messages between agents, buffers for offline ones.
 //!
-//! Plain HTTP on loopback. There is deliberately no TLS: the traffic never
-//! leaves the machine, and authenticity comes from Ed25519 signatures on the
-//! messages — which, unlike TLS, survive passing through an untrusted bus. That
-//! choice is also what keeps `ring` (and all C) out of the dependency tree.
+//! Plain HTTP for loopback or a trusted private network. Ed25519 signatures
+//! authenticate messages independently of the transport; they do not encrypt
+//! payloads or authorize broker access. Omitting TLS keeps C dependencies out.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -15,7 +14,7 @@ use interlink::store::Store;
 use tokio::net::TcpListener;
 
 #[derive(Parser)]
-#[command(about = "Message broker for Claude Code agents")]
+#[command(about = "Message broker for Claude Code and Codex CLI agents")]
 struct Args {
     /// Address to listen on. Loopback unless you really mean otherwise.
     #[arg(long, env = "INTERLINK_ADDR", default_value = "127.0.0.1:9440")]

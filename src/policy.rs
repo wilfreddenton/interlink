@@ -17,12 +17,24 @@
 //! older files is accepted and ignored, so those files still load.)
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::identity::AgentId;
+use crate::state::atomic_write;
+
+#[derive(Debug)]
+pub struct PeerConflict(String);
+
+impl fmt::Display for PeerConflict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for PeerConflict {}
 
 /// The on-disk form of one peer. Extra fields (e.g. a legacy `"may"`) are
 /// ignored, so files written by older versions still parse.
@@ -116,18 +128,20 @@ impl Policy {
             .iter()
             .find(|p| p.id == id && p.petname != petname)
         {
-            bail!("that key is already authorized as '{}'", other.petname);
+            return Err(PeerConflict(format!(
+                "that key is already authorized as '{}'",
+                other.petname
+            ))
+            .into());
         }
         match self.peers.iter().find(|p| p.petname == petname) {
             // Exact name→key match already present: idempotent no-op. A different key
             // under this petname is rejected, not silently rekeyed — otherwise a
             // pairing message claiming an existing peer's name would repoint trust.
             Some(existing) if existing.id == id => {}
-            Some(existing) => bail!(
-                "petname '{petname}' is already authorized under a different key ({}); \
-                 remove it first to reassign",
-                existing.id.to_b64()
-            ),
+            Some(existing) => return Err(PeerConflict(format!(
+                "petname '{petname}' is already authorized under a different key ({}); remove it first to reassign", existing.id.to_b64()
+            )).into()),
             None => self.peers.push(Peer {
                 petname: petname.to_string(),
                 id,
@@ -157,7 +171,7 @@ impl Policy {
     pub fn save(&self, path: &Path) -> Result<()> {
         let mut json = self.to_json()?;
         json.push('\n');
-        std::fs::write(path, json).with_context(|| format!("writing {}", path.display()))?;
+        atomic_write(path, json.as_bytes())?;
         Ok(())
     }
 }

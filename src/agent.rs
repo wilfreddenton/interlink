@@ -40,7 +40,7 @@ pub enum Dispatch {
     /// A non-peer *knocked*: it wants to pair. Carries only its key and a
     /// self-claimed name — never actionable text. Surfaced for human accept/reject.
     PairRequest { from_key: String, name: String },
-    /// A non-peer replied that it accepted our earlier knock. The handler adds it
+    /// A peer replied that it accepted our earlier knock. The handler adds it
     /// only if we actually have an outstanding request to that key.
     PairAccept { from_key: String, name: String },
 }
@@ -123,7 +123,9 @@ pub fn decide(
             from_key: from.to_b64(),
             name: msg.text.clone(),
         }),
-        (None, MessageKind::PairAccept) => Ok(Dispatch::PairAccept {
+        // A crash can occur after persisting the peer but before delivering its
+        // acceptance notice. The handler still requires a matching pending request.
+        (_, MessageKind::PairAccept) => Ok(Dispatch::PairAccept {
             from_key: from.to_b64(),
             name: msg.text.clone(),
         }),

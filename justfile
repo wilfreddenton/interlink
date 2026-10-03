@@ -26,7 +26,7 @@ no-c:
     @! cargo tree --all-features            | grep -E '\b(ring|aws-lc-sys|openssl-sys) v' || (echo "C crypto backend found" && exit 1)
     @echo "no C dependencies"
 
-# Build a fully static Linux binary (needs: rustup target add <triple>).
+# Build static Linux binaries on a matching native host; install the target first.
 static triple="aarch64-unknown-linux-musl":
     cargo build --release --all-features --target {{triple}}
     @file target/{{triple}}/release/interlink-bus | grep -q "statically linked" && echo "static OK"
@@ -39,5 +39,11 @@ keygen name:
 bus addr="127.0.0.1:9440":
     cargo run --release --features bus --bin interlink-bus -- --addr {{addr}}
 
-# Everything CI runs.
+# Local CI checks; GitHub also checks the feature powerset and native platforms.
 ci: lint test no-c
+
+# Exercise installed CLIs against localhost fixtures, without external model calls.
+host-test:
+    cargo build --all-features --bins
+    python3 tests/host/codex.py
+    python3 tests/host/claude.py

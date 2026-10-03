@@ -1,11 +1,13 @@
-//! Agent-to-agent messaging for Claude Code.
+//! Agent-to-agent messaging for Claude Code and Codex CLI.
 //!
-//! Two Claude Code agents converse by each running an MCP server: outbound is the
-//! `send_message` tool; inbound is delivered by default to a local inbox that a
+//! Claude Code and Codex CLI agents each run an MCP server: outbound is the
+//! `send_message` tool. Claude inbound is delivered by default to a local inbox that a
 //! background `interlink-mcp wait` listener drains (plain `claude`, no flags), with
 //! native `notifications/claude/channel` push as an opt-in enhancement (`interlinked`
 //! / `INTERLINK_CHANNELS=1`). A small **bus** routes messages between agents and
 //! buffers for agents that are offline.
+//! Codex CLI uses the same protocol and trust gate, with local lifecycle hooks
+//! binding the MCP instance to a thread and [`codex`] delivering through its queue.
 //!
 //! ## Trust
 //!
@@ -15,7 +17,7 @@
 //! so an unverified message never reaches the model.
 //!
 //! Authority comes from the server's `instructions` string, which lands in
-//! Claude's system prompt. The peer's text is untrusted data that parameterises
+//! the host's MCP context. The peer's text is untrusted data that parameterises
 //! an action; it never authorises one. An ungated channel is a prompt-injection
 //! vector.
 //!
@@ -30,11 +32,29 @@ pub mod agent;
 #[cfg(feature = "bus")]
 pub mod bus;
 
+#[cfg(feature = "agent")]
+pub mod codex;
+
+#[cfg(feature = "agent")]
+pub mod delivery;
+
 #[cfg(feature = "identity")]
 pub mod identity;
 
 #[cfg(feature = "agent")]
 pub mod policy;
+
+#[cfg(feature = "agent")]
+pub mod policy_store;
+
+#[cfg(feature = "agent")]
+pub mod pairing;
+
+#[cfg(feature = "agent")]
+pub mod inbox;
+
+#[cfg(feature = "agent")]
+pub mod state;
 
 pub mod route;
 

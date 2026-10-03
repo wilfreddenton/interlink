@@ -272,7 +272,7 @@ pub struct SignedMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<String>,
     /// The sender's own inbox route, `key#session_id` — an **unsigned** routing hint
-    /// (deliberately outside [`canonical`], like the bus-side `to` suffix) so a reply
+    /// (deliberately outside `canonical`, like the bus-side `to` suffix) so a reply
     /// returns to the exact session that sent this. A relay could tamper it, but only
     /// to misroute a reply among the sender's own sessions; the trust gate is
     /// untouched because the signed `from` is still the bare key.
@@ -373,7 +373,7 @@ pub struct Announcement {
     pub ts: u64,
     pub sig: String,
     /// Age since last refresh, stamped by the bus on `/roster` (never signed, so it's
-    /// outside [`announce_canonical`] and ignored by [`verify`](Announcement::verify)).
+    /// outside `announce_canonical` and ignored by [`verify`](Announcement::verify)).
     /// The client classifies a session live vs. away from it. Absent on a freshly-signed
     /// announcement and on older buses.
     #[serde(default, skip_serializing_if = "Option::is_none")]

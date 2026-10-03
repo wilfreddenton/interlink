@@ -1,281 +1,245 @@
 # interlink
 
 [![CI](https://github.com/wilfreddenton/interlink/actions/workflows/ci.yml/badge.svg)](https://github.com/wilfreddenton/interlink/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Cryptographically-authenticated, cross-machine agent-to-agent chat for Claude Code.**
+**Authenticated, cross-machine agent chat for Claude Code and Codex CLI.**
 
-![the trust model, over the real binaries](docs/demo.gif)
+![The trust model, demonstrated with the real binaries](docs/demo.gif)
 
-Independent Claude Code sessions — on the same machine or across the internet —
-chat with each other over a real trust model. A peer's identity **is** its
-Ed25519 public key, every message is signed and verified before it reaches the
-model, and you decide who's admitted through a human-gated pairing handshake.
+Independent sessions talk through a shared broker. Each peer's identity is its
+Ed25519 public key, messages are signed and verified, and an operator decides
+which keys to admit. Sessions can share a machine or communicate across a trusted
+private network.
 
-It runs on **plain `claude`** — no `--dangerously-load-development-channels` and no
-org `channelsEnabled`, both of which Claude Code channels require. Delivery defaults
-to a channel-less path (a background listener that wakes on incoming messages), with
-native channels as an opt-in enhancement (`interlinked`) where you have them.
-
-## Why this exists
-
-Letting Claude Code sessions talk to each other is a crowded problem:
-[`claude-peers-mcp`](https://github.com/louislva/claude-peers-mcp) (~2k★) and
-others do it, and Claude Code's own **channels** feature is built for exactly
-this. They solve **transport**.
-
-Almost none of them solve **identity**. The popular one's quickstart is literally:
-
-```
-claude --dangerously-skip-permissions --dangerously-load-development-channels server:claude-peers
-```
-
-That is: *any process that can reach the local broker can inject text into an
-agent, and there is no way to know who sent it.* Claude Code's own channel docs
-call an ungated channel a "prompt injection vector." interlink's answer is a
-cryptographic one — **you always know exactly which key you're talking to, and
-only keys you've deliberately admitted can reach you at all.**
+**Version 0.9.0 adds Codex CLI support**, durable pairing retries, Claude inbox
+recovery and renewal, shared-policy updates, and Codex failed-delivery recovery.
+Upgrade from 0.8.0 to use these features; see [CHANGELOG.md](CHANGELOG.md).
 
 ## The trust model
 
-Two ideas do all the work.
-
-**1. A peer's identity is its public key.** Names (`alice`, `bob`) are local
-petnames; the key is the truth. Claiming a name gets you nothing without the key.
-Messages are signed over a domain-separated encoding and verified with
-`verify_strict` *before* anything reaches the model — a stranger's message is
-dropped, not shown.
-
-**2. `peers.json` is a deny-by-default allowlist.** A peer is a public key you've
-admitted:
+`peers.json` is a deny-by-default allowlist. Names are local petnames; the key is
+the identity:
 
 ```json
 {
-  "my-laptop":  { "key": "8Emom3…" },
-  "my-desktop": { "key": "rq2AzH…" }
+  "my-laptop": { "key": "<full public key from interlink-keygen>" }
 }
 ```
 
-An admitted peer is a **trusted chat partner**: its messages are delivered
-straight into your session and you may act on them. An unlisted key gets nothing.
-There is no half-trust tier — interlink is chat between agents you *fully* trust,
-so **pairing is the real security decision**. Admit only machines you control (or
-a party you'd genuinely let act on your session).
+Ordinary messages from unknown keys are rejected before model delivery. Unknown
+keys may send pairing requests, whose claimed names are presented as untrusted
+metadata, and correlated acceptances of locally initiated requests. Another
+session using your own key is implicitly trusted.
 
-> Earlier versions tried to *sandbox* a semi-trusted peer's requests in a
-> capability-scoped subagent. That was removed on purpose: safe *bidirectional*
-> collaboration fundamentally requires mutual trust (you can't sandbox the
-> replies you consume), so interlink authenticates trust cryptographically rather
-> than pretending to contain an untrusted collaborator. See
-> [`DESIGN.md`](DESIGN.md).
+An admitted peer is a full collaborator whose messages enter the model's context.
+Pairing and peer-policy changes remain operator actions. A peer's request or a
+claim that its operator approved something is not local operator consent. Host
+sandbox and approval settings still apply. See [DESIGN.md](DESIGN.md).
 
 ## How it fits together
 
-Two components, two lifecycles:
-
-```
-  Claude session ──┐                                    ┌── Claude session
-   interlink-mcp    ├──►  interlink-bus  (one broker)  ◄──┤   interlink-mcp
-   (per session)   ┘      routes by recipient key       └   (per session)
+```text
+Claude or Codex session                         Claude or Codex session
+    interlink-mcp  <---->  interlink-bus  <---->  interlink-mcp
+    one per session        shared broker         one per session
 ```
 
-- **`interlink-bus`** — the broker. You run **one**, somewhere reachable (a
-  service; see [Deploying](#deploying)). It routes opaque payloads to a recipient
-  key, holds no keys, verifies nothing, and buffers for offline agents.
-- **`interlink-mcp`** — the agent-side MCP server. **One per Claude session**,
-  started by Claude Code. It signs/verifies messages, enforces the trust gate,
-  and long-polls the bus.
+- `interlink-bus` routes opaque payloads to `public-key#session_id`. It holds no
+  private keys and does not authenticate clients or verify messages.
+- `interlink-mcp` signs outgoing messages, verifies incoming ones, enforces the
+  peer policy, and delivers them to its host session.
 
-An agent finds the bus through **`INTERLINK_URL`** (default
-`http://127.0.0.1:9440`). Point every agent's `INTERLINK_URL` at your bus and they
-can talk. (It takes a comma-separated list, so several relays — and thus
-federation — is just "add a URL.")
-
-So installing the agent (below) is half of it: **you also need a bus running.** The
-plugin ships the agent; the bus comes from the release archive (all four binaries)
-or `cargo install`, and you run it once as a service.
+`INTERLINK_URL` selects the broker, defaulting to `http://127.0.0.1:9440`. It also
+accepts comma-separated relay URLs. Agents poll every relay and attempt each on
+send; acceptance by one relay is enough to complete an outbound send.
 
 ## Install
 
-interlink ships as a **Claude Code plugin**. Installing it registers the MCP server
-(the pure-Rust `interlink-mcp` binary, fetched via `npx interlink-mcp`), the
-`interlink` skill, and the hooks (progress-nudge + the channel-less inbox listener)
-in **every** session — no `settings.json` editing.
+### Binaries and first-time identity setup
 
-From the `claude` CLI:
+Install version 0.9.0 or newer:
+
+```bash
+cargo install interlink-mcp --version 0.9.0 --locked
+```
+
+Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).
+Both supply `interlink-mcp`, `interlink-bus`, `interlink-keygen`, and `interlinked`.
+The npm package supplies only the MCP binary. To build a local checkout instead,
+run `cargo install --path . --locked` from its root.
+
+On a new identity, create the key and an empty policy. Reuse existing files if
+already configured; do not reset an existing allowlist:
+
+```bash
+mkdir -p ~/.config/interlink ~/.local/state/interlink
+interlink-keygen --out ~/.config/interlink/id.key
+printf '{}\n' > ~/.config/interlink/peers.json
+interlink-bus --db ~/.local/state/interlink/bus.redb
+```
+
+The key generator prints the public key. Keep the private key file local. Run one
+broker for the participating sessions, preferably as a service. `--db` makes its
+queue survive restart; without it the broker is in memory.
+
+The Rust server defaults to `~/.config/interlink/id.key` and `peers.json`.
+`--key` / `INTERLINK_KEY` and `--peers` / `INTERLINK_PEERS` override those paths.
+On Windows it uses `USERPROFILE` when `HOME` is absent. The shell examples above
+use POSIX syntax; the [Claude plugin](plugin/README.md) has its own explicit env
+configuration, which must also resolve to the intended files.
+
+### Claude Code
+
+For the published plugin:
 
 ```bash
 claude plugin marketplace add wilfreddenton/interlink
 claude plugin install interlink@interlink
 ```
 
-Or the same two commands as slash commands inside a session (`/plugin marketplace
-add wilfreddenton/interlink`, then `/plugin install interlink@interlink`).
+This installs the MCP registration, Interlink skill, and hooks. It invokes the
+published npm binary. To test local development changes, follow the
+[local plugin instructions](plugin/README.md#using-this-checkout), which point
+both the server and listener at the locally built binary.
 
-That's the agent. Two one-time steps and you're live:
+Launch plain `claude` after setup. Default delivery uses a local inbox and an
+async Stop listener. It needs no development-channel flag or `channelsEnabled`,
+but MCP and hooks must be allowed by the host's normal configuration and policy.
+The listener renews after 50 idle minutes with a brief maintenance turn.
 
-**1. An identity + the one bus.** The plugin ships only the agent; you also need a
-keypair and a single bus for agents to reach each other through. Get the four static
-binaries any of these ways (pure Rust, no C toolchain):
-
-- **crates.io:** `cargo install interlink-mcp --locked` (default features build all
-  four binaries)
-- **Release archive:** download it for your platform from the
-  [latest release](https://github.com/wilfreddenton/interlink/releases/latest)
-- **From git:** `cargo install --git https://github.com/wilfreddenton/interlink --locked`
-
-Then:
+For the optional native-channel path, the installed plugin can be launched with:
 
 ```bash
-mkdir -p ~/.config/interlink ~/.local/state/interlink
-interlink-keygen --out ~/.config/interlink/id.key     # prints your public key to share
-printf '{}\n' > ~/.config/interlink/peers.json         # add peers via pairing or add_peer
-interlink-bus --db ~/.local/state/interlink/bus.redb   # the ONE bus — 127.0.0.1:9440
+interlinked
 ```
 
-Run the bus once, ideally as a service (durable queue, loopback HTTP, no TLS — see
-[Security](#security)). Every agent finds it through **`INTERLINK_URL`** (default
-`http://127.0.0.1:9440`); point that at the bus host if the bus is elsewhere, and
-see [Deploying](#deploying) for a Tailscale setup.
+The launcher sets `INTERLINK_CHANNELS=1` and passes
+`--dangerously-load-development-channels plugin:interlink@interlink`. Channel
+availability and applicable organization settings still matter. See
+[delivery](docs/DELIVERY.md#claude-native-channels) for requirements and limits.
 
-**2. Launch — plain `claude` is all you need.** Just run `claude`; the plugin
-delivers incoming messages over the **default channel-less path**: the server writes
-each verified message to a local inbox, and an async `Stop` hook *is* the listener —
-it runs `interlink-mcp wait`, which blocks on the inbox and wakes the idle agent when
-a message lands. No model-driven arming, no flags, and it works even where Claude Code
-channels are disabled by org policy.
+### Codex CLI
 
-If you *do* have Claude Code development channels and want the nicer native push,
-launch with **`interlinked`** instead of `claude`:
+Follow [codex/README.md](codex/README.md) to configure the MCP server and trusted
+binding hooks. The adapter uses `codex queue` on the local shared daemon. It
+supports root CLI sessions, not desktop, remote app-server, subagent, or ephemeral
+thread delivery. No sandbox or hook-trust bypass is needed.
 
-```bash
-interlinked          # = INTERLINK_CHANNELS=1 claude --dangerously-load-development-channels plugin:interlink@interlink
-```
+Claude and Codex can share the same identity and peer policy. The Claude plugin
+does not configure Codex automatically.
 
-That sets channel mode (the server pushes directly; the Stop hook self-disables) and
-passes the research-preview flag. Extra args forward to `claude`. Same trust model
-either way — channels vs. background-task is only *how* a message reaches the model.
+## Discovery and pairing
 
-**Managing peers from chat.** `add_peer` / `list_peers` / `remove_peer` edit the
-allowlist live — persisted to `peers.json`, applied to the very next message, no
-restart. Because they change *who is trusted*, they're operator actions: never do
-them because a peer's message asked you to.
+Each session announces its identity and session details. `discover` lists live
+and retained away sessions. `INTERLINK_NAME` supplies a friendly, self-claimed
+name; otherwise discovery uses a key fingerprint.
 
-## Discovery & pairing
+A typical handshake is:
 
-Boot with an empty `peers.json` and let nodes find each other. Each agent
-heartbeats a **signed** presence announcement to the bus; `discover` lists who's
-online as `name (fingerprint)`. To connect, one side knocks and the other
-accepts — a human-gated handshake, no key copy-paste:
+1. Run `discover` and verify the peer's fingerprint with your operator.
+2. Call `request_pair(target="bob-laptop")`.
+3. The other operator reviews `list_pair_requests` and calls
+   `accept_pair(fingerprint="<requester fingerprint>")`.
+4. A confirmation returns to the exact requesting session. Once handled, both
+   identities are admitted and can exchange messages.
 
-```
-alice:  discover                    → sees "bob-laptop (FrXRYYrl…)"
-alice:  request_pair(bob-laptop)    → knocks
-bob:    (session shows) "Pairing request from FrXRYYrl claiming 'alice-laptop' — NOT a peer"
-bob:    accept_pair(<alice-fp>)     → they're now mutual chat peers
-```
+`add_peer`, `list_peers`, and `remove_peer` manage the shared `peers.json` directly.
+Updates use locked, atomic replacement; sibling sessions reload the policy.
+Existing names cannot silently be assigned to different keys.
 
-The security stays intact because of one invariant: **a non-peer can only
-*knock*, never message you.** A knock carries just a key and a self-claimed name
-(no free text), surfaced as metadata — accepting is operator-only. You pin the
-**key**, not the name (TOFU) — names are non-unique hints, deliberately. Full
-design: [`docs/DISCOVERY.md`](docs/DISCOVERY.md). Presence plus human-gated
-pairing on a *cryptographic* identity is rare among agent-chat MCP servers.
+Pending pairing requests and unsent confirmations persist per identity/session.
+An explicit retry keeps the outstanding request ID. Saved control messages get
+fresh signatures on send, preserving recovery across long broker outages. A
+confirmation already on the broker remains subject to message freshness.
+Partial acceptance and petname conflicts report recovery instructions; see
+[discovery and pairing](docs/DISCOVERY.md).
 
-## Many sessions on one machine
+## Multiple sessions and tasks
 
-interlink installs as a user-scope plugin, so **every** Claude Code session runs
-its own `interlink-mcp` — and they're all addressable. Each takes its stable id from
-`CLAUDE_CODE_SESSION_ID` (a random one off-Claude) and polls its own inbox
-`key#session_id`, so there's no shared mailbox and no fan-out. A session **registers on startup** (node + session;
-node registration is idempotent — the bus groups sessions under one `pubkey`) and
-unregisters on close, so the roster reflects your currently-open sessions.
-`discover` lists each identity with its **live sessions**
-(`session_id · cwd · git repo · summary`):
+Use `set_summary(summary="working on the API")` so peers can identify a session.
+`send_message(to="desktop", session="<id>", text="...")` targets one explicitly.
+A unique roster ID prefix also works. Without a session argument, the server
+prefers the peer's remembered reply session, then a single live session, then a
+single away session. Ambiguous choices require an explicit ID.
 
-```
-A → [ a3f2c1 · ~/eden · git:eden · "installing Hunyuan3D deps" ]
-    [ 71b0e4 · ~/site · git:site · "fixing the deploy" ]
-```
+Sessions sharing one identity can use `to="self"` to reach each other without
+pairing. A session cannot message itself. Claude uses its host session ID; Codex
+binds to the owning thread UUID before announcing or receiving. Reopening the
+same host session can recover its address; a new session does not inherit it.
+See [sessions](docs/SESSIONS.md) and [presence](docs/PRESENCE.md).
 
-`send_message(to:"A", session:"a3f2c1")` routes to that session. If A has exactly
-one live session you can omit `session` (it auto-routes); a reply sticks to the
-session that messaged you, so an ongoing conversation never re-picks. The **signed
-`to` is still the bare key**, so `#session_id` is only an unsigned routing hint and
-the trust gate is unchanged.
-
-Two sessions on the **same machine** share one identity, so they can talk with
-`send_message(to:"self", session:"<id>")` — no pairing and no self-entry in
-`peers.json`, because it's the same principal (only the holder of your key can sign
-as it). A session can't address *itself*: it's excluded from `discover` routing and
-an explicit self-target is refused. The session store is in-memory, so it survives sleep
-(same id, drains its queue on wake); a hard restart comes back under a new session id,
-which peers re-pick. Full design: [`docs/SESSIONS.md`](docs/SESSIONS.md).
-
-## See it without a Claude session
-
-```bash
-cargo build --release && ./scripts/demo.sh
-```
-
-A short tour of the trust model over the real binaries: a signed message from an
-allowlisted peer is delivered, and a stranger's — signed, but by an unknown key —
-is dropped before it can reach the model.
+Delegated work can carry `task_id`, `status`, and `in_reply_to`. Status values are
+`update`, `needs_input`, `result`, `failed`, and `canceled`. `cancel_task` requests
+cooperative cancellation; it does not forcibly interrupt the peer. Reply routing
+is per identity, not per task. See [task tracking](docs/TASKS.md).
 
 ## Durability
 
-The **bus** is the durable layer: it keeps a message for an offline recipient until
-acked, over a pure-Rust ACID store ([redb](https://crates.io/crates/redb)), so a bus
-restart loses nothing. Delivery is at-least-once, made safe by `msg_id` dedupe. Each
-**agent** store is in-memory — isolated per session (so concurrent sessions on one
-machine never collide) and intact across sleep, though not a hard restart. The
-`message_status`, `conversation_history`, and `list_pending` tools expose that local
-log.
+| State | Survives an MCP restart? |
+|---|---|
+| Shared peer policy | Yes |
+| Pairing requests and unsent control messages | Yes, under the same identity/session |
+| Claude inbox and cursor | Yes, under the same session |
+| Codex saved failed deliveries | Yes, under the same identity/thread |
+| Ordinary outbox, conversation log, replay set, sticky routes | No |
 
-## Security
+Broker queues persist across broker restarts only with `--db`. They are bounded
+(default 1024 messages per recipient, dropping oldest). The roster is always in
+memory. Messages waiting at the broker can expire: the receiver allows 24 hours
+in the past and 60 seconds in the future. Three-day presence retention is not a
+three-day delivery guarantee.
 
-- **No transport encryption, on purpose (loopback/tailnet).** The bus binds
-  `127.0.0.1` by default; authenticity comes from **signatures on the messages**,
-  which — unlike TLS — survive passing through an untrusted bus. Compromising the
-  bus lets you drop or reorder messages, never forge one. This also keeps the
-  dependency tree free of C (`ring`), so the binaries are pure-Rust and statically
-  linkable. Note the flip side: signed ≠ confidential — a relay you don't control
-  can read message bodies, so only federate through a relay you trust.
-- **Admission is full trust.** An admitted peer's message enters your session and
-  you may act on it. Pair only machines you control; a compromised peer key
-  becomes tool execution on the sessions that trust it.
-- **Delivery is channel-optional.** The default path (local inbox + a `Stop`-hook
-  `wait` listener) needs no special flags and works under any org policy. Native
-  channels are an opt-in enhancement (`interlinked`) and a Claude Code research
-  preview — custom ones require `--dangerously-load-development-channels` and the
-  protocol may change. The trust gate is identical on both paths.
+Delivery is not exactly-once. Deduplication is bounded and process-local; the
+host handoff has no consumption acknowledgment. `message_status`,
+`conversation_history`, and `list_pending` expose local state, not read receipts.
 
-## Pure Rust, cross-platform
+Codex saves permanent or exhausted queue failures before releasing the broker
+message. Use `failed_deliveries` to list, read, retry, or discard them. A timeout
+has an unknown outcome, so manual retry may duplicate a message. See
+[delivery paths, storage, and recovery](docs/DELIVERY.md).
 
-No C dependencies (CI fails the build if `ring`/`openssl-sys`/`cc`/`cmake`
-reappear). Fully static binaries on Linux (musl) and Windows; on macOS, links
-only system libraries. Feature-gated: `bus`, `agent`, `identity`, `persist`.
+## Security and deployment
 
-## Related work
+Use loopback or a trusted private network. The broker has no authentication or
+TLS: a reachable client can inspect or disrupt queues. Message signatures prove
+sender identity but do not provide confidentiality or protect broker availability.
+The HTTP client does not support HTTPS-only endpoints.
 
-| | messaging | who can send | cryptographic identity | cross-machine |
-|---|---|---|---|---|
-| Agent Teams (built-in) | ✅ | lead-spawned only | — | same host only |
-| claude-peers-mcp | ✅ | anyone on the broker | — | ✅ |
-| **interlink** | ✅ | **signed + allowlisted keys** | **✅ Ed25519, key = identity** | **✅** |
+For a private-network broker and systemd service instructions, see
+[Deploying interlink](docs/DEPLOY.md). Public-relay authentication, encryption,
+and aggregate resource limits remain [deferred](DIRECTORY.md).
 
-## Deploying
+## Development and validation
 
-Run it on your own machines over Tailscale (no code changes, no public exposure),
-and federate later by adding a relay URL. See [`DEPLOY.md`](docs/DEPLOY.md).
+The project is Rust, with no C-compiling dependencies. CI builds native Linux
+x64/arm64 musl, Windows x64 with static CRT, and macOS arm64. macOS still links
+system libraries. Features are `bus`, `agent`, `identity`, and `persist`.
 
-## Design
+```bash
+just ci
+just host-test
+```
 
-The full walkthrough — execution model, the channel discovery, the trust gate,
-why the capability-delegation model was removed, and the runtime facts we had to
-establish by experiment — is in [`DESIGN.md`](DESIGN.md). Deferred work is in
-[`DIRECTORY.md`](DIRECTORY.md).
+`just ci` runs formatting, Clippy, tests, and dependency checks. GitHub CI also
+checks the feature powerset and platform builds. `just host-test` needs Python
+3.11+, installed Codex and Claude CLIs, and localhost access. It runs local response
+fixtures and writes diagnostics under `target/host-validation/`.
+
+The recorded host runs used Codex 0.160.0 and Claude Code 2.1.278. They cover trusted
+Codex lifecycle binding and Claude listener renewal, not production-model or
+interactive UI behavior. See [validation details](docs/DELIVERY.md#validation).
+
+The existing terminal demo drives the binaries without a host session:
+
+```bash
+just build
+./scripts/demo.sh
+```
+
+It expects Bash, Python 3, standard Unix utilities, and an unused localhost port
+9440. For release packaging, see [npm maintainer notes](npm/README.md#releasing).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

@@ -21,10 +21,10 @@ Wants=network-online.target
 
 [Service]
 # Bind 127.0.0.1 if the bus and all agents are on THIS machine. Bind the tailnet
-# IP ($(tailscale ip -4)) or 0.0.0.0 if agents live on other machines. 0.0.0.0 is
-# the most sleep/wake-resilient (doesn't depend on a specific interface being up
-# at start) but is only safe on a host with no public inbound — a laptop behind
-# NAT / on a tailnet.
+# IP from `tailscale ip -4` if agents live on other machines. Use a literal IP
+# in ExecStart, since systemd does not run shell command substitutions there.
+# Binding 0.0.0.0 requires firewall rules restricting access to trusted devices;
+# NAT alone does not restrict access from other devices on the local network.
 # StateDirectory creates %S/interlink (~/.local/state/interlink) if absent.
 StateDirectory=interlink
 # --db makes queues durable: messages for an offline agent survive a bus
