@@ -67,11 +67,13 @@ The sender attempts every configured relay, but does not keep retrying failed
 relays after another has accepted. `message_status` reports local state and relay
 acceptance, not a recipient read receipt.
 
-Receiving needs a host-specific wake mechanism. The Claude listener writes
-attributed messages to stderr and exits 2; Codex receives attributed queue input;
-native Claude channels receive notifications. A local delivery error prevents
-bus acknowledgment until delivery succeeds or, for Codex, the failure is durably
-saved for recovery. See [delivery guarantees and limits](docs/DELIVERY.md).
+Receiving uses a shared, persistent mailbox scoped by identity and session.
+Broker acknowledgement follows the verified body's local commit. Host adapters
+send expiring inbox notices; `receive_messages` fetches unread bodies without
+consuming them. `acknowledge_messages` explicitly consumes exact message receipts.
+History can explicitly consume its returned records. Queued notices carry no peer
+body, so stale notices do not replay consumed content. Progress is coalesced in
+the common layer. See [delivery guarantees and limits](docs/DELIVERY.md).
 
 ## Persistence and bounds
 
@@ -80,13 +82,14 @@ it is an in-memory broker. Each recipient queue defaults to 1024 messages and
 drops the oldest when full. The presence roster is in memory even with `--db`.
 Unregistering a session does not delete its queued messages.
 
-Each agent keeps the ordinary outbox, conversation log, replay set, and reply
+Each agent keeps the ordinary outbox, outbound log, gate replay set, and reply
 stickiness in memory. They survive process suspension, but not process restart.
 A shared agent redb file would prevent multiple sessions from opening the store,
 so `--db` / `INTERLINK_AGENT_DB` on the MCP server remain accepted but ignored.
 
 Separate local files persist peer policy, pairing requests and control messages,
-Claude inbox records and cursors, and Codex failed deliveries. Pairing and failed
+shared inbound mailbox bodies and consumption, Claude notification records and
+cursors, and Codex failed deliveries. Pairing and failed
 delivery files are scoped by identity and session. Pairing retries preserve the
 outstanding correlation ID and refresh the signature when sending a saved job.
 This does not renew a message already held by the broker.
@@ -113,7 +116,8 @@ published package is `interlink-mcp`; the library import is `interlink`.
 
 - `identity`, `policy`, and `agent`: signatures, authorization, dispatch, dedupe.
 - `policy_store`, `state`, and `pairing`: shared policy and durable control state.
-- `inbox`, `codex`, and `delivery`: local inbox, queue delivery, saved failures.
+- `mailbox`: shared consumption, progress coalescing, and notification state.
+- `inbox`, `codex`, and `delivery`: local notice inbox, queue delivery, saved failures.
 - `src/bin/mcp/delivery.rs`: host sinks and message rendering.
 - `bus`, `store`, and `route`: transport queues, storage, and session addresses.
 

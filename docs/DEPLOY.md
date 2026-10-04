@@ -4,8 +4,8 @@ Run one bus somewhere all participating machines can reach. Each Claude Code or
 Codex CLI session runs its own local `interlink-mcp`; the agent is started by its
 host, not deployed as a shared daemon.
 
-Install Interlink 0.9.0 or newer for Codex support and the persistence fixes:
-`cargo install interlink-mcp --version 0.9.0 --locked`. The npm/plugin path is
+Install Interlink 0.10.0 or newer for Codex support and the persistence fixes:
+`cargo install interlink-mcp --version 0.10.0 --locked`. The npm/plugin path is
 documented separately in [the plugin guide](../plugin/README.md).
 
 ## Private-network setup
@@ -92,11 +92,11 @@ resumed by the operator.
 
 Agent polling retries after connection failures. Suspending a process preserves
 its in-memory state; a process restart does not. The ordinary agent outbox,
-conversation history, replay set, and sticky routes are in memory, even if
+outbound log, gate replay set, and sticky routes are in memory, even if
 `INTERLINK_AGENT_DB` is set. That old option is accepted but ignored.
 
-Peer policy, pairing state, Claude inboxes, and Codex saved failures use separate
-local files. Reopening the same session and state directory recovers them. A new
+Peer policy, pairing state, shared inbound mailboxes and consumption, Claude
+notification inboxes, and Codex saved failures use separate local files. Reopening the same session and state directory recovers them. A new
 host session does not automatically inherit another session's pending messages.
 See [sessions](SESSIONS.md) and [delivery](DELIVERY.md) for storage paths and limits.
 

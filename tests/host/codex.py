@@ -1,4 +1,4 @@
-import json, queue, socket, subprocess, threading, time, tomllib, urllib.request
+import json, os, queue, socket, subprocess, threading, time, tomllib, urllib.request
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +39,10 @@ class Server:
         for k, v in config.items():
             args += ['-c', k + '=' + toml(v)]
         self.log = open(WORK / (label + '.stderr'), 'w')
-        self.p = subprocess.Popen(args, cwd=WORK, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True)
+        config_home = WORK / 'config'
+        config_home.mkdir(exist_ok=True)
+        env = {**os.environ, 'CODEX_HOME': str(config_home)}
+        self.p = subprocess.Popen(args, cwd=WORK, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True)
         threading.Thread(target=self.reader, daemon=True).start()
         self.call('initialize', {'clientInfo': {'name': 'interlink-host-validation', 'version': '1'}, 'capabilities': {'experimentalApi': True}})
         self.send({'jsonrpc': '2.0', 'method': 'initialized'})
@@ -92,11 +95,6 @@ buslog = open(WORK / 'bus.stderr', 'w')
 bus = subprocess.Popen([str(ROOT / 'target/debug/interlink-bus'), '--addr', f'127.0.0.1:{port}'], stdout=subprocess.DEVNULL, stderr=buslog)
 base = tomllib.loads((ROOT / 'codex/config.toml').read_text())
 base['mcp_servers']['interlink'] = {'enabled': True, 'command': str(ROOT / 'target/debug/interlink-mcp'), 'args': ['--host', 'codex', '--key', str(key), '--peers', str(WORK / 'peers.json'), '--url', url], 'env': {'XDG_STATE_HOME': str(WORK / 'state')}}
-user_path = Path.home() / '.codex/config.toml'
-user = tomllib.loads(user_path.read_text()) if user_path.exists() else {}
-for name in user.get('mcp_servers', {}):
-    if name != 'interlink':
-        base['mcp_servers'][name] = {'enabled': False}
 for event in ['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PreCompact', 'PostCompact', 'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'SubagentStart', 'SubagentStop', 'Stop', 'Interrupt']:
     base['hooks'].setdefault(event, [])
 base.update({'features.plugins': False, 'features.apps': False, 'features.hooks': True, 'model_provider': 'fixture', 'model': 'fixture', 'model_providers.fixture': {'name': 'Local validation fixture', 'base_url': f'http://127.0.0.1:{provider.server_port}/v1', 'wire_api': 'responses', 'requires_openai_auth': False}, 'model_reasoning_effort': 'low'})

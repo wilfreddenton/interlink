@@ -95,8 +95,14 @@ it and use `add_peer` with the verified key and an available name. Repeating a
 knock alone cannot repair one-sided trust.
 
 `message_status(msg_id)`, `conversation_history(peer)`, and `list_pending()` show
-local message state. The ordinary outbox and history are in memory; `sent` means
-relay acceptance, not a peer read receipt. `list_peers`, `add_peer`, and
+local message state. On an inbox notice, call `receive_messages` with its
+`notification_id`. After reading, call `acknowledge_messages` with the exact
+returned receipt objects before fetching the next batch. Empty means continue
+silently. Read-only history also returns receipts that can be acknowledged.
+`consume=true` explicitly consumes history before replying. Progress needs no reply; highlight questions,
+failures, and substantive results. Inbound consumption persists across restarts.
+The ordinary outbox and outbound log are in memory; `bus_accepted` means relay
+acceptance, not a peer read receipt. `list_peers`, `add_peer`, and
 `remove_peer` manage the shared allowlist.
 
 Codex sessions use `failed_deliveries` to list, read, retry, or discard saved queue

@@ -3,7 +3,9 @@
 The current project implements signed identity, human-gated pairing, discovery,
 per-session routing, task correlation, status messages, and cooperative
 cancellation. Codex CLI support and persistence improvements shipped in
-[0.9.0](CHANGELOG.md#090---2026-10-03).
+[0.9.0](CHANGELOG.md#090---2026-10-03). Shared mailbox consumption, progress
+supersession, and expiring notification retries ship in
+[0.10.0](CHANGELOG.md#0100---2026-10-03).
 
 ## Public-relay hardening
 
@@ -36,7 +38,7 @@ hint. It must not be confused with signed `in_reply_to` message correlation.
   if one-way delivery confirmation becomes necessary.
 - Inbox compaction and cleanup of abandoned session files and broker queues are
   not implemented. Retention needs to preserve unread messages and cursor safety.
-- The ordinary agent outbox and conversation log are still in memory. Persisting
+- The ordinary agent outbox and outbound log are still in memory. Persisting
   them would need isolation and recovery rules for concurrent sessions.
 - A queued message can expire while waiting on the broker. Renewing an unsent
   pairing control message does not extend the validity of copies already sent.

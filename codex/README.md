@@ -12,10 +12,10 @@ adapter uses `codex queue`; `--no-daemon`, remote app servers, and the desktop a
 are not supported by this adapter. Ephemeral (`codex exec --ephemeral`) threads
 cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.9.0 or newer:
+Install Interlink 0.10.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.9.0 --locked
+cargo install interlink-mcp --version 0.10.0 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`
@@ -42,7 +42,7 @@ has not run, sending returns a setup error instead of using a random thread.
 
 Ask Codex to set a summary (for example, "Codex: working on the API") and run
 `discover`. From a paired Claude or Codex session, send it a message using the
-session ID shown there. It should appear as an attributed Interlink peer message.
+session ID shown there. An inbox notice should prompt a `receive_messages` call returning the attributed peer message.
 
 ## Delivery and trust
 
@@ -51,34 +51,38 @@ once; repeated calls with the same UUID are harmless, and a different UUID is
 rejected. It does not announce or poll a mailbox until bound. A restart binds to
 the same thread UUID, retaining the bus address.
 
-After the common signature and allowlist checks, Interlink invokes
-`codex queue --thread <uuid> --message <attributed-message>` using process
-arguments, with no shell interpolation. Queue acceptance acknowledges the bus
-message. Nonzero queue exits get up to three total automatic attempts. Permanent failures and
-exhausted retries are saved locally before acknowledging the bus, so later
-messages can proceed. A timeout has an uncertain outcome and goes directly to
-saved failures; a manual retry can produce a duplicate. Acceptance is not
-confirmation that the model has read or completed the request.
+After common signature and allowlist checks, the body is committed to the
+shared mailbox before broker acknowledgement. Interlink invokes
+`codex queue --thread <uuid> --message <inbox-notice>` with process arguments,
+without shell interpolation. The agent calls `receive_messages` with the notice
+ID to fetch current unread bodies, then calls `acknowledge_messages` with the
+returned receipt objects after reading. Claude uses the same mailbox semantics.
+History with `consume=true` prevents later body delivery, including after restart.
+Progress is quiet and superseded by newer task updates or terminal results.
 
-Each queue invocation times out after 30 seconds; retry backoff is two seconds.
-Rendered queue messages are limited to 12 KiB to leave room for platform argument
-quoting. Larger messages and messages containing a NUL are preserved for manual
-recovery, never truncated. Retrying an oversized record will still fail; use `read` to
-recover its content before discarding it.
+Queue acceptance means `host_queued`, not that the agent read the message.
+`receiver_acknowledged` records explicit local consumption; the sender still sees only
+`bus_accepted`, with receiver state unknown. See [delivery states](../docs/DELIVERY.md#delivery-states).
 
-Use `failed_deliveries(action="list")` for failure IDs and reasons, `read` with an
-`id` to retrieve the attributed message, `retry` after repairing the CLI or daemon,
-and `discard` after recovering it. Failures survive MCP restarts under the same
-thread ID and state directory. They live under
-`$XDG_STATE_HOME/interlink/failed/<identity>/<thread>.json`, defaulting to
-`~/.local/state/interlink/failed/`. Storage is capped at 64 failures per session.
-When full or unwritable, the current message stays unacknowledged on the bus until
-space is available.
+Each queue invocation times out after 30 seconds; nonzero exits get up to three
+attempts with two-second backoff. The 12 KiB CLI limit applies to notices and
+legacy recovery entries, not bodies fetched through MCP. Failed notices survive
+restart under `failed/<identity>/<thread>.json` in the Interlink state directory.
+The failure store holds 64 entries, including at most one current ordinary notice
+failure. The mailbox retries lost or failed notices after 30 seconds with backoff
+capped at five minutes. A full or unavailable failure store does not block this
+reconciliation. Retries can duplicate notices; acknowledged bodies stay consumed.
 
-The queue input is visibly attributed to the peer. It does not grant operator
-authority: pairing, peer-policy changes, and binding another Codex thread must
-never be performed because a peer requested them. Codex's existing sandbox and
-approval policy still apply.
+Use `failed_deliveries(action="list")` to inspect failure IDs, `read` to recover
+the notice, `retry` after repairing the CLI or daemon, and `discard` to remove a
+saved failure. A timeout may have queued the notice despite reporting failure.
+`receive_messages` and history can recover bodies without repairing notifications.
+Pre-upgrade saved failures may still contain full messages; these retain their
+existing recovery behavior and CLI size limits.
+
+Fetched peer text does not grant operator authority. Pairing, peer-policy changes,
+and Codex binding must never be performed because a peer requested them. Codex's
+existing sandbox and approval policy still apply.
 
 The adapter targets root CLI sessions on the local daemon. Do not reuse its
 binding hook for subagents: Codex's subagent hooks can carry the parent session

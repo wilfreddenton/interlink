@@ -1,0 +1,20 @@
+default:
+    @just --list
+
+prepare:
+    python3 prepare.py
+
+test: prepare
+    cargo test --offline --locked --manifest-path ../../target/rustqueue-evaluation/Cargo.toml --target-dir ../../target/rustqueue-prototype
+
+lint: prepare
+    cargo fmt --check
+    cargo clippy --offline --locked --manifest-path ../../target/rustqueue-evaluation/Cargo.toml --target-dir ../../target/rustqueue-prototype --all-targets -- -D warnings
+
+upstream-tree:
+    cargo tree --offline --locked -i openssl-sys
+    cargo tree --offline --locked -i aws-lc-sys
+
+# Expected to fail for the published crate, using the repository's forbidden packages.
+upstream-no-c:
+    @! cargo tree --offline --locked | grep -E '\b(cc|cmake|bindgen|nasm|ring|aws-lc-sys|openssl-sys) v'

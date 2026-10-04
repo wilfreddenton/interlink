@@ -12,9 +12,9 @@ Ed25519 public key, messages are signed and verified, and an operator decides
 which keys to admit. Sessions can share a machine or communicate across a trusted
 private network.
 
-**Version 0.9.0 adds Codex CLI support**, durable pairing retries, Claude inbox
-recovery and renewal, shared-policy updates, and Codex failed-delivery recovery.
-Upgrade from 0.8.0 to use these features; see [CHANGELOG.md](CHANGELOG.md).
+**Version 0.10.0 adds a shared persistent inbox** for Claude and Codex, explicit
+message acknowledgements, progress coalescing, and recovery from lost notifications.
+See [CHANGELOG.md](CHANGELOG.md) for the release details.
 
 ## The trust model
 
@@ -58,10 +58,10 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.9.0 or newer:
+Install version 0.10.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.9.0 --locked
+cargo install interlink-mcp --version 0.10.0 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).
@@ -182,7 +182,8 @@ is per identity, not per task. See [task tracking](docs/TASKS.md).
 | Pairing requests and unsent control messages | Yes, under the same identity/session |
 | Claude inbox and cursor | Yes, under the same session |
 | Codex saved failed deliveries | Yes, under the same identity/thread |
-| Ordinary outbox, conversation log, replay set, sticky routes | No |
+| Shared inbound mailbox, consumption, and pending notice | Yes, under the same identity/session |
+| Ordinary outbox, outbound log, gate replay set, sticky routes | No |
 
 Broker queues persist across broker restarts only with `--db`. They are bounded
 (default 1024 messages per recipient, dropping oldest). The roster is always in
@@ -190,13 +191,20 @@ memory. Messages waiting at the broker can expire: the receiver allows 24 hours
 in the past and 60 seconds in the future. Three-day presence retention is not a
 three-day delivery guarantee.
 
-Delivery is not exactly-once. Deduplication is bounded and process-local; the
-host handoff has no consumption acknowledgment. `message_status`,
-`conversation_history`, and `list_pending` expose local state, not read receipts.
+All hosts receive an inbox notice and use `receive_messages` to fetch current
+unread bodies without consuming them. After reading, call `acknowledge_messages`
+with their exact receipt objects. History is read-only unless `consume=true`. Progress updates stay quiet and are
+superseded by newer task progress or a terminal result; questions and failures
+remain individually available.
 
-Codex saves permanent or exhausted queue failures before releasing the broker
-message. Use `failed_deliveries` to list, read, retry, or discard them. A timeout
-has an unknown outcome, so manual retry may duplicate a message. See
+Delivery is not exactly-once. Lost notices retry with capped backoff, and a dropped
+fetch response remains unread. Explicitly acknowledged bodies are excluded from
+later unread fetches. The `consume=true` history shortcut consumes before replying,
+so an interrupted response may require rereading history. `bus_accepted` means relay acceptance, never a read
+receipt. Receiver acknowledgements are local; no remote receipt protocol exists.
+
+Codex retains failed notices for `failed_deliveries` recovery. The shared mailbox
+keeps the bodies independently of host failures. See
 [delivery paths, storage, and recovery](docs/DELIVERY.md).
 
 ## Security and deployment

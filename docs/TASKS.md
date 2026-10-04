@@ -55,10 +55,17 @@ Reply stickiness is per peer identity, not per task. When tasks target different
 sessions under one identity, specify `session` on sends to preserve the intended
 recipient. `cancel_task` follows automatic session routing.
 
-The message log and ordinary outbox are in memory. Restarting the MCP server
-loses them; neither task metadata nor durable pairing state turns them into a
-persistent task scheduler. A status of `sent` means relay acceptance, not that
-the peer read or completed the task.
+The outbound log and ordinary outbox are in memory. The shared inbound mailbox,
+consumption, and progress supersession persist per identity/session. Neither is
+a persistent task scheduler. `bus_accepted` means relay acceptance, not that the
+peer read or completed the task. Receiver acknowledgement records explicit local consumption.
+
+All hosts call `receive_messages` on an inbox notice, then `acknowledge_messages`
+with the returned receipt objects after reading. `conversation_history` is
+read-only unless `consume=true`; consuming history suppresses later body fetches.
+Updates stay quiet and newer updates or terminal results supersede earlier
+progress for the same sender/session/task. Unanswered questions and failures
+remain available. See [delivery semantics](DELIVERY.md).
 
 ## Progress and authority
 

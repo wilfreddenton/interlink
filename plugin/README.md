@@ -13,7 +13,7 @@ claude plugin install interlink@interlink
 ```
 
 The plugin invokes `npx -y interlink-mcp` for both the server and listener. Use
-version 0.9.0 or newer for the persistence and recovery fixes. If upgrading,
+version 0.10.0 or newer for the persistence and recovery fixes. If upgrading,
 update the installed plugin and restart Claude so it reloads the server and hooks.
 The local instructions below are for testing development changes.
 
