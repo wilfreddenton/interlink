@@ -1,5 +1,5 @@
 # Merge these sections into ~/.codex/config.toml, then review them in /hooks.
-# Install Interlink 0.10.0 or newer first.
+# Install Interlink 0.10.1 or newer first.
 [mcp_servers.interlink]
 command = "interlink-mcp"
 args = ["--host", "codex"]

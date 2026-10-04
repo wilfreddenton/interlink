@@ -23,9 +23,30 @@ use the same ID and local state directory. See [delivery](DELIVERY.md).
 ## Addressing
 
 `discover` lists retained live and away sessions, grouped by identity, including
-unpaired identities. Each entry shows the session ID, working directory, git-root
-label, summary, and presence. `set_summary(summary)` updates the local label and
+unpaired identities. Each entry shows the optional title, session ID, working directory, git-root
+label, summary, and presence. `set_summary(summary)` updates the work description and
 announces it.
+
+## Titles
+
+`set_session_title(title="Interlink development")` adds a display label to the
+current session in either Claude Code or Codex CLI. It leaves the ID, summary,
+and routing unchanged. Duplicate titles are allowed; use session IDs to address
+messages. An empty title clears the label. Titles are trimmed and limited to
+256 UTF-8 bytes, with no control characters.
+
+The title is announced immediately and on subsequent heartbeats, and appears in
+discovery and session selection lists. Like summaries, titles set through the
+tool live for the MCP process. Set `INTERLINK_TITLE` in that session's MCP
+environment or pass `interlink-mcp --title "Interlink development"` to supply a
+title on startup. A shared MCP configuration gives every session the same initial
+title; individual sessions can change theirs with the tool. Codex still waits
+for its local binding hook before announcing.
+
+Interlink titles do not rename or automatically track the host conversation's
+native title. Native-title synchronization is not implemented yet.
+
+## Selecting a session
 
 `send_message(to="desktop", session="<id>", text="...")` selects a session
 explicitly. An exact ID or a unique prefix of a roster entry is expanded to the

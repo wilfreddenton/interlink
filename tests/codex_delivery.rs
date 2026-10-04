@@ -6,17 +6,19 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::{Json, Router};
 use std::time::Duration;
 
 use interlink::bus::Broker;
-use interlink::identity::{AgentKey, MessageKind, TaskStatus};
+use interlink::identity::{AgentKey, MessageKind, SessionInfo, TaskStatus};
 use interlink::now_ms;
 use interlink::pairing::{ControlMessage, PairingStore, Request as PairRequest};
 use interlink::store::Store;
@@ -1150,4 +1152,257 @@ async fn lost_notice_and_unacknowledged_fetch_recover_for_all_adapters() {
         client.close().await;
         server.abort();
     }
+}
+
+#[tokio::test]
+async fn discovery_reports_broker_failures_for_both_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = AgentKey::generate().unwrap();
+    let peer = AgentKey::generate().unwrap();
+    identity(dir.path(), &key, &peer);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = Router::new()
+        .route(
+            "/empty/roster",
+            get(|| async { Json(json!({"roster": []})) }),
+        )
+        .route(
+            "/http/roster",
+            get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+        )
+        .route("/json/roster", get(|| async { "not JSON" }))
+        .route(
+            "/schema/roster",
+            get(|| async { Json(json!({"roster": {}})) }),
+        );
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let offline = format!("http://{}", unused.local_addr().unwrap());
+    drop(unused);
+
+    for host in ["claude", "codex"] {
+        for (endpoint, expected) in [
+            (offline.clone(), "roster request failed"),
+            (format!("{url}/http"), "503"),
+            (format!("{url}/json"), "invalid roster JSON"),
+            (format!("{url}/schema"), "expected a roster array"),
+            (format!("{url}/empty"), "no matching nodes"),
+        ] {
+            let mut client =
+                Client::start(dir.path(), host, &endpoint, Path::new("/bin/true")).await;
+            if host == "codex" {
+                bind(&mut client, CODEX_THREAD).await;
+            }
+            // Known petnames must not hide transport failures behind an empty filter result.
+            for args in [json!({}), json!({"peer": "peer"})] {
+                let reply = client.tool("discover", args).await;
+                let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+                assert!(text.contains(expected), "{reply}");
+                if endpoint.ends_with("/empty") {
+                    success(&reply);
+                    assert!(!text.contains("Warning"), "{reply}");
+                } else {
+                    assert_eq!(reply["result"]["isError"], true, "{reply}");
+                    assert!(text.contains("Discovery unavailable"), "{reply}");
+                    assert!(text.contains(&endpoint), "{reply}");
+                }
+            }
+            if endpoint == offline {
+                let pairing = client
+                    .tool("request_pair", json!({"target":"missing"}))
+                    .await;
+                assert!(
+                    pairing["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Discovery unavailable")
+                );
+                let send = client
+                    .tool(
+                        "send_message",
+                        json!({
+                            "to":"peer", "session":"offline-session", "text":"queue while offline"
+                        }),
+                    )
+                    .await;
+                success(&send);
+            }
+            client.close().await;
+        }
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn discovery_preserves_partial_results_and_uses_one_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = AgentKey::generate().unwrap();
+    let peer = AgentKey::generate().unwrap();
+    identity(dir.path(), &key, &peer);
+    let announcement = peer.announce(
+        "remote",
+        &SessionInfo {
+            session_id: "remote-session".into(),
+            ..Default::default()
+        },
+        now_ms(),
+    );
+    let mut forged = announcement.clone();
+    forged.name = "forged".into();
+    let roster = json!({"roster":[announcement, forged, {"invalid":"entry"}]});
+    let reads = Arc::new(AtomicUsize::new(0));
+    let handler_reads = reads.clone();
+    let router = Router::new()
+        .route(
+            "/good/roster",
+            get(move || {
+                handler_reads.fetch_add(1, Ordering::SeqCst);
+                let body = roster.clone();
+                async move { Json(body) }
+            }),
+        )
+        .route("/bad/roster", get(|| async { StatusCode::BAD_GATEWAY }))
+        .route(
+            "/empty/roster",
+            get(|| async { Json(json!({"roster": []})) }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+
+    for host in ["claude", "codex"] {
+        let urls = format!("{url}/bad,{url}/good,{url}/good");
+        let mut client = Client::start(dir.path(), host, &urls, Path::new("/bin/true")).await;
+        for args in [json!({}), json!({"peer":"remote"}), json!({"peer":"peer"})] {
+            let before = reads.load(Ordering::SeqCst);
+            let reply = client.tool("discover", args).await;
+            let text = tool_text(&reply);
+            assert!(text.contains("remote ("), "{reply}");
+            assert_eq!(text.matches("remote-session").count(), 1, "{reply}");
+            assert!(!text.contains("forged"), "{reply}");
+            assert!(text.contains("results may be incomplete"), "{reply}");
+            assert!(text.contains(&format!("{url}/bad")), "{reply}");
+            assert!(text.contains("502"), "{reply}");
+            assert_eq!(reads.load(Ordering::SeqCst) - before, 2);
+        }
+        let missing = client.tool("discover", json!({"peer":"missing"})).await;
+        assert!(
+            missing["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("results may be incomplete")
+        );
+        client.close().await;
+
+        let urls = format!("{url}/bad,{url}/empty");
+        let mut client = Client::start(dir.path(), host, &urls, Path::new("/bin/true")).await;
+        let reply = client.tool("discover", json!({})).await;
+        let text = tool_text(&reply);
+        assert!(text.contains("no matching nodes"), "{reply}");
+        assert!(text.contains("results may be incomplete"), "{reply}");
+        client.close().await;
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn session_titles_are_additive_across_hosts_and_do_not_change_routing() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = AgentKey::generate().unwrap();
+    let peer = AgentKey::generate().unwrap();
+    let claude_dir = dir.path().join("claude");
+    let codex_dir = dir.path().join("codex");
+    identity(&claude_dir, &key, &peer);
+    identity(&codex_dir, &key, &peer);
+    let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = broker.clone().router();
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let mut claude = Client::start(&claude_dir, "claude", &url, Path::new("/bin/true")).await;
+    let mut codex = Client::start(&codex_dir, "codex", &url, Path::new("/bin/true")).await;
+    let unbound = codex
+        .tool("set_session_title", json!({"title":"not bound"}))
+        .await;
+    assert!(unbound.get("error").is_some(), "{unbound}");
+    bind(&mut codex, CODEX_THREAD).await;
+    for client in [&mut claude, &mut codex] {
+        success(
+            &client
+                .tool("set_summary", json!({"summary":"checking routing"}))
+                .await,
+        );
+        success(
+            &client
+                .tool("set_session_title", json!({"title":"  Shared title  "}))
+                .await,
+        );
+    }
+    let discovered = claude.tool("discover", json!({})).await;
+    let text = tool_text(&discovered);
+    assert_eq!(
+        text.matches("title:\"Shared title\"").count(),
+        2,
+        "{discovered}"
+    );
+    assert_eq!(text.matches("checking routing").count(), 2, "{discovered}");
+    assert!(text.contains(CODEX_THREAD));
+    assert!(text.contains("claude-session"));
+
+    let invalid = codex
+        .tool("set_session_title", json!({"title":"bad\ntitle"}))
+        .await;
+    assert!(invalid.get("error").is_some());
+    let unchanged = claude.tool("discover", json!({})).await;
+    assert_eq!(
+        tool_text(&unchanged)
+            .matches("title:\"Shared title\"")
+            .count(),
+        2
+    );
+    success(
+        &codex
+            .tool("set_session_title", json!({"title":"Renamed title"}))
+            .await,
+    );
+    let roster = broker.roster(now_ms());
+    assert_eq!(roster.len(), 2, "rename must update the same registration");
+    let titled = roster
+        .iter()
+        .find(|a| a["session"]["session_id"] == CODEX_THREAD)
+        .unwrap();
+    assert_eq!(titled["session"]["title"], "Renamed title");
+    assert_eq!(titled["session"]["summary"], "checking routing");
+
+    let sent = claude
+        .tool(
+            "send_message",
+            json!({
+                "to":"self", "session":CODEX_THREAD, "text":"same address after rename"
+            }),
+        )
+        .await;
+    success(&sent);
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let received = codex.tool("receive_messages", json!({})).await;
+            if tool_text(&received).contains("same address after rename") {
+                codex.acknowledge(&received).await;
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    success(&codex.tool("set_session_title", json!({"title":""})).await);
+    let cleared = claude.tool("discover", json!({})).await;
+    let text = tool_text(&cleared);
+    assert!(!text.contains("Renamed title"));
+    assert_eq!(text.matches("checking routing").count(), 2);
+    assert!(text.contains(CODEX_THREAD));
+    codex.close().await;
+    claude.close().await;
+    server.abort();
 }

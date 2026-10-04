@@ -13,7 +13,7 @@ claude plugin install interlink@interlink
 ```
 
 The plugin invokes `npx -y interlink-mcp` for both the server and listener. Use
-version 0.10.0 or newer for the persistence and recovery fixes. If upgrading,
+version 0.10.1 or newer for the persistence and recovery fixes. If upgrading,
 update the installed plugin and restart Claude so it reloads the server and hooks.
 The local instructions below are for testing development changes.
 
@@ -89,7 +89,7 @@ not the local `--plugin-dir` testing path.
 
 ## Tools
 
-The shared tools cover messaging, task status, cancellation, session summaries,
+The shared tools cover messaging, task status, cancellation, session titles and summaries,
 discovery, peer management, pairing, and local message history. `bind_codex_session`
 and `failed_deliveries` are exposed by the common server for the Codex workflow.
 Binding and retrying a saved Codex failure require Codex mode; Claude delivery

@@ -4,8 +4,8 @@ Run one bus somewhere all participating machines can reach. Each Claude Code or
 Codex CLI session runs its own local `interlink-mcp`; the agent is started by its
 host, not deployed as a shared daemon.
 
-Install Interlink 0.10.0 or newer for Codex support and the persistence fixes:
-`cargo install interlink-mcp --version 0.10.0 --locked`. The npm/plugin path is
+Install Interlink 0.10.1 or newer for Codex support and the persistence fixes:
+`cargo install interlink-mcp --version 0.10.1 --locked`. The npm/plugin path is
 documented separately in [the plugin guide](../plugin/README.md).
 
 ## Private-network setup
@@ -89,6 +89,13 @@ without an interactive login. Host sessions themselves must still be launched or
 resumed by the operator.
 
 ## Reconnection and recovery
+
+Prefer a stable private DNS name in client URLs. If the broker's address changes,
+update its bind address and restart the service. Clients configured with the old
+numeric address need their URL updated and their MCP process restarted; startup
+registration and heartbeat retries still use the URL loaded by that process.
+Check `GET /roster` from each machine to verify ordinary HTTP connectivity.
+`discover` reports unavailable brokers and warns when results are incomplete.
 
 Agent polling retries after connection failures. Suspending a process preserves
 its in-memory state; a process restart does not. The ordinary agent outbox,

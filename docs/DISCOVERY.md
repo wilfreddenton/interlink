@@ -17,9 +17,22 @@ Each bound session sends a signed announcement containing
 git-root label, and summary. Sessions announce on startup (after binding for
 Codex) and every 30 seconds.
 
+An optional `session.title` adds a readable label. Its `title_sig` extension signs
+the title together with the original announcement signature, binding it to that
+exact identity, session, and announcement. The v1 signature remains unchanged:
+older clients verify the session and ignore the title, and older brokers retain
+the opaque extension. New clients reject titles with missing or invalid proofs.
+Removing both optional fields reduces the announcement to its valid legacy form.
+
 The bus stores announcements by `pubkey#session_id`. `/roster` returns a flat
 array with unsigned `age_ms` values; the MCP server verifies signatures, merges
 entries from its relays, and groups them by identity for `discover`.
+
+`discover` reports an error when no configured broker returns a valid roster.
+If some brokers respond and others fail, it returns the available entries with
+a warning identifying the failed brokers; those results may be incomplete.
+Connection failures, HTTP errors, and malformed roster responses are distinct
+from a successful empty roster. This behavior is shared by Claude Code and Codex.
 
 A session is live below 90 seconds of silence, away until three days, and gone
 when unregistered or expired. The roster is held in memory and capped at 4096

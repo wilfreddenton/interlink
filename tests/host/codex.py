@@ -94,7 +94,7 @@ if not key.exists():
 buslog = open(WORK / 'bus.stderr', 'w')
 bus = subprocess.Popen([str(ROOT / 'target/debug/interlink-bus'), '--addr', f'127.0.0.1:{port}'], stdout=subprocess.DEVNULL, stderr=buslog)
 base = tomllib.loads((ROOT / 'codex/config.toml').read_text())
-base['mcp_servers']['interlink'] = {'enabled': True, 'command': str(ROOT / 'target/debug/interlink-mcp'), 'args': ['--host', 'codex', '--key', str(key), '--peers', str(WORK / 'peers.json'), '--url', url], 'env': {'XDG_STATE_HOME': str(WORK / 'state')}}
+base['mcp_servers']['interlink'] = {'enabled': True, 'command': str(ROOT / 'target/debug/interlink-mcp'), 'args': ['--host', 'codex', '--key', str(key), '--peers', str(WORK / 'peers.json'), '--url', url], 'env': {'XDG_STATE_HOME': str(WORK / 'state'), 'INTERLINK_CODEX_BIN': '/bin/true'}}
 for event in ['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PreCompact', 'PostCompact', 'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'SubagentStart', 'SubagentStop', 'Stop', 'Interrupt']:
     base['hooks'].setdefault(event, [])
 base.update({'features.plugins': False, 'features.apps': False, 'features.hooks': True, 'model_provider': 'fixture', 'model': 'fixture', 'model_providers.fixture': {'name': 'Local validation fixture', 'base_url': f'http://127.0.0.1:{provider.server_port}/v1', 'wire_api': 'responses', 'requires_openai_auth': False}, 'model_reasoning_effort': 'low'})
@@ -136,6 +136,34 @@ try:
     roster = json.load(urllib.request.urlopen(url + '/roster', timeout=2))
     assert all((tid in json.dumps(roster) for tid in ids))
     print('PASS: trusted lifecycle hooks bound two isolated Codex threads', flush=True)
+    for tid in ids:
+        inventory = server.call('mcpServerStatus/list', {'threadId': tid, 'serverName': 'interlink'})
+        interlink = next(s for s in inventory['data'] if s['name'] == 'interlink')
+        names = {tool['name'] for tool in interlink['tools'].values()}
+        assert {'receive_messages', 'acknowledge_messages'} <= names, names
+
+    def tool(tid, name, arguments):
+        result = server.call('mcpServer/tool/call', {'threadId': tid, 'server': 'interlink', 'tool': name, 'arguments': arguments})
+        assert not result.get('isError'), result
+        return '\n'.join(c['text'] for c in result['content'] if c['type'] == 'text')
+
+    # These ephemeral threads cannot receive real codex queue calls. Exercise the
+    # connected host's fetch/ack tools directly, with queue delivery stubbed above.
+    tool(ids[0], 'send_message', {'to': 'self', 'session': ids[1], 'text': 'host fetch acknowledgement check'})
+    end = time.monotonic() + 15
+    while time.monotonic() < end:
+        received = tool(ids[1], 'receive_messages', {})
+        if 'host fetch acknowledgement check' in received:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError('message did not reach the receiving host mailbox')
+    receipts = [json.loads(line.split('] Receipt: ', 1)[1]) for line in received.splitlines() if '] Receipt: ' in line]
+    assert receipts, received
+    acknowledged = tool(ids[1], 'acknowledge_messages', {'messages': receipts})
+    assert 'Acknowledged 1 ' in acknowledged, acknowledged
+    assert tool(ids[1], 'receive_messages', {}).startswith('No unread messages')
+    print('PASS: installed Codex exposes and executes fetch/ack tools on the owning thread', flush=True)
 finally:
     if server:
         server.close()

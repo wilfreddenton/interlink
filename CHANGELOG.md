@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+## [0.10.1] - 2026-10-04
+
+### Added
+- Optional session titles for Claude and Codex, set with `set_session_title`,
+  `--title`, or `INTERLINK_TITLE`. Titles appear alongside existing IDs and
+  summaries without changing routing, with a signed extension compatible with
+  older clients and brokers.
+
+### Fixed
+- Clarify that every inbox notice requires fetching and acknowledging messages
+  before ending the turn, and that unavailable tools must be reported.
+- Discovery reports broker connection, HTTP, and response errors instead of an
+  empty roster. Partial results identify failed brokers for both Claude and Codex.
+- Filtered discovery resolves names from the same roster snapshot it displays.
+
 ## [0.10.0] - 2026-10-03
 
 ### Added
