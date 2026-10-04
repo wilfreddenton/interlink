@@ -13,7 +13,7 @@ claude plugin install interlink@interlink
 ```
 
 The plugin invokes `npx -y interlink-mcp` for both the server and listener. Use
-version 0.10.1 or newer for the persistence and recovery fixes. If upgrading,
+version 0.10.2 or newer for automatic titles and the persistence and recovery fixes. If upgrading,
 update the installed plugin and restart Claude so it reloads the server and hooks.
 The local instructions below are for testing development changes.
 
@@ -30,7 +30,8 @@ In your local plugin copy:
 1. In `plugin/.mcp.json`, change the Interlink server command to the installed
    binary's absolute path and its `args` to `[]`, retaining the env settings.
 2. In `plugin/hooks/hooks.json`, change the Stop hook command to the same binary
-   followed by `wait`, quoting the executable path if it contains spaces. Keep
+   followed by `wait`, quoting the executable path if it contains spaces. Update
+   the `sync-title` commands to that same binary too. Keep
    `async`, `asyncRewake`, and the timeout unchanged.
 3. Disable any installed copy of Interlink in Claude's plugin manager so the
    session has only one Interlink MCP registration and hook set. Load the local
@@ -72,6 +73,10 @@ allowed, but does not require the Claude channel feature. Use a Claude version
 that provides `CLAUDE_CODE_SESSION_ID` to MCP and supports `asyncRewake`; the host
 fixture was validated on 2.1.278.
 
+- `SessionStart` and `UserPromptSubmit` (v0.10.2 and newer): run
+  `interlink-mcp sync-title` to copy Claude's custom title into shared local state.
+  `/rename` appears in Interlink after the next prompt and refresh. Generated
+  titles are not supplied by these hooks; discovery uses a readable fallback.
 - `Stop`: runs `interlink-mcp wait` asynchronously. Verified messages are drained
   from the durable local inbox; exit 2 wakes the host. An OS file lock limits the
   listener to one process per session. After 50 idle minutes it requests a brief

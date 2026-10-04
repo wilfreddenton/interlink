@@ -12,8 +12,8 @@ Ed25519 public key, messages are signed and verified, and an operator decides
 which keys to admit. Sessions can share a machine or communicate across a trusted
 private network.
 
-**Version 0.10.1 adds optional session titles** for Claude and Codex, clearer
-broker discovery errors, and explicit inbox fetch and acknowledgement instructions.
+**Version 0.10.2 synchronizes native session titles** for Claude and Codex, with
+persistent overrides and readable fallback names.
 See [CHANGELOG.md](CHANGELOG.md) for the release details.
 
 ## The trust model
@@ -58,10 +58,10 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.10.1 or newer:
+Install version 0.10.2 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.10.1 --locked
+cargo install interlink-mcp --version 0.10.2 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).
@@ -157,11 +157,12 @@ Partial acceptance and petname conflicts report recovery instructions; see
 
 ## Multiple sessions and tasks
 
-Use `set_session_title(title="API development")` to add a readable session label,
-and `set_summary(summary="checking retries")` to describe its current work.
-Titles are optional display metadata; duplicate titles and renames do not change
-session IDs or routing. They work in both Claude and Codex. See
-[session titles](docs/SESSIONS.md#titles) for startup configuration and lifetime.
+Version 0.10.2 and newer follow native conversation titles automatically,
+with a project/node/host/session fallback. `set_session_title(title="API development")`
+pins a persistent override; an empty title restores automatic naming.
+Use `set_summary(summary="checking retries")` to describe current work.
+Titles and renames do not change IDs or routing. See
+[session titles](docs/SESSIONS.md#titles) for host support and refresh timing.
 `send_message(to="desktop", session="<id>", text="...")` targets one explicitly.
 A unique roster ID prefix also works. Without a session argument, the server
 prefers the peer's remembered reply session, then a single live session, then a

@@ -215,12 +215,14 @@ localhost socket access. The recorded validation used Codex 0.160.0 and Claude
 Code 2.1.278 with local response fixtures, not production models:
 
 - Codex: reviewed hook hashes supplied for that invocation, then lifecycle hooks
-  binding two ephemeral threads to separate MCP sessions. Both inbox tools are
+  binding a saved thread and an ephemeral thread to separate MCP sessions. Both inbox tools are
   checked in each thread's tool inventory, then a sibling message is fetched and
   acknowledged through Codex's MCP connection. Queued delivery to ephemeral
-  threads is unsupported, so that handoff uses a stub.
+  threads is unsupported, so that handoff uses a stub. The saved thread also
+  verifies native title changes without starting turns.
 - Claude: a persistent stream-JSON process, a three-second listener renewal,
-  Stop re-arming, and a later fixture message causing another turn.
+  Stop re-arming, and a later fixture message causing another turn. The title
+  hook also verifies that the real host supplies a custom session title.
 
 The fixture does not cover the interactive hook-review UI, interactive Claude
 TUI, native-channel acceptance, or production-model behavior. See the

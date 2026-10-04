@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-04
+
+### Added
+- Automatic session titles: Codex metadata reads follow native renames without a
+  model turn; Claude hooks synchronize custom titles on startup and prompts.
+  Unnamed sessions have a readable project/node/host/session fallback.
+- Persistent Interlink title overrides and native-title cache, isolated by host
+  and session. Clearing an override restores automatic naming. Lookup failures
+  preserve the previous title and do not prevent registration.
+
+### Fixed
+- Claude title hooks honor `INTERLINK_SESSION` and explicit `--session` overrides,
+  keeping native titles and renames aligned with the advertised session.
+
 ## [0.10.1] - 2026-10-04
 
 ### Added

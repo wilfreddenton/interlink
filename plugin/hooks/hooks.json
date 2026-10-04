@@ -23,6 +23,28 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y interlink-mcp sync-title",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y interlink-mcp sync-title",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

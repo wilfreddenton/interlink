@@ -4,8 +4,8 @@ Run one bus somewhere all participating machines can reach. Each Claude Code or
 Codex CLI session runs its own local `interlink-mcp`; the agent is started by its
 host, not deployed as a shared daemon.
 
-Install Interlink 0.10.1 or newer for Codex support and the persistence fixes:
-`cargo install interlink-mcp --version 0.10.1 --locked`. The npm/plugin path is
+Install Interlink 0.10.2 or newer for Codex support and the persistence fixes:
+`cargo install interlink-mcp --version 0.10.2 --locked`. The npm/plugin path is
 documented separately in [the plugin guide](../plugin/README.md).
 
 ## Private-network setup

@@ -22,6 +22,7 @@ use interlink::identity::{AgentKey, MessageKind, SessionInfo, TaskStatus};
 use interlink::now_ms;
 use interlink::pairing::{ControlMessage, PairingStore, Request as PairRequest};
 use interlink::store::Store;
+use interlink::titles::TitleStore;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::net::TcpListener;
@@ -194,7 +195,7 @@ async fn codex_binding_cross_host_delivery_and_retry() {
     identity(&claude_dir, &claude_key, &codex_key);
 
     let cli = dir.path().join("codex-cli");
-    fs::write(&cli, "#!/bin/sh\nif test -f \"$0.fail\"; then printf x >> \"$0.attempts\"; exit 1; fi\nprintf '%s\\000' \"$@\" >> \"$0.args\"\n").unwrap();
+    fs::write(&cli, "#!/bin/sh\n[ \"$1\" = queue ] || exit 0\nif test -f \"$0.fail\"; then printf x >> \"$0.attempts\"; exit 1; fi\nprintf '%s\\000' \"$@\" >> \"$0.args\"\n").unwrap();
     fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
     let recording = cli.with_extension("args");
     let failure = cli.with_extension("fail");
@@ -495,7 +496,7 @@ async fn codex_failed_notice_retains_messages_and_recovers_after_restart() {
     let sender = AgentKey::generate().unwrap();
     identity(dir.path(), &receiver, &sender);
     let cli = dir.path().join("codex-cli");
-    fs::write(&cli, "#!/bin/sh\nif test -f \"$0.fail\"; then printf x >> \"$0.attempts\"; exit 1; fi\nprintf '%s\\n' \"$5\" >> \"$0.args\"\n").unwrap();
+    fs::write(&cli, "#!/bin/sh\n[ \"$1\" = queue ] || exit 0\nif test -f \"$0.fail\"; then printf x >> \"$0.attempts\"; exit 1; fi\nprintf '%s\\n' \"$5\" >> \"$0.args\"\n").unwrap();
     fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(cli.with_extension("fail"), "").unwrap();
     let recording = cli.with_extension("args");
@@ -619,7 +620,11 @@ async fn pairing_recovers(repeat_request: bool, age_confirmation: bool) {
     let first_cli = dir.path().join("first-cli");
     let second_cli = dir.path().join("second-cli");
     for cli in [&first_cli, &second_cli] {
-        fs::write(cli, "#!/bin/sh\nprintf '%s\\n' \"$5\" >> \"$0.args\"\n").unwrap();
+        fs::write(
+            cli,
+            "#!/bin/sh\n[ \"$1\" = queue ] || exit 0\nprintf '%s\\n' \"$5\" >> \"$0.args\"\n",
+        )
+        .unwrap();
         fs::set_permissions(cli, fs::Permissions::from_mode(0o700)).unwrap();
     }
     let broker = Broker::new(Store::in_memory().unwrap(), 1024);
@@ -757,7 +762,11 @@ async fn pairing_conflict_retires_request_and_allows_following_messages() {
     let other = AgentKey::generate().unwrap();
     identity(dir.path(), &receiver, &sender);
     let cli = dir.path().join("codex-cli");
-    fs::write(&cli, "#!/bin/sh\nprintf '%s\n' \"$5\" >> \"$0.args\"\n").unwrap();
+    fs::write(
+        &cli,
+        "#!/bin/sh\n[ \"$1\" = queue ] || exit 0\nprintf '%s\n' \"$5\" >> \"$0.args\"\n",
+    )
+    .unwrap();
     fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
     let broker = Broker::new(Store::in_memory().unwrap(), 1024);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -857,7 +866,11 @@ async fn busy_host_history_consumption_and_restart_for_all_adapters() {
         let sender = AgentKey::generate().unwrap();
         identity(dir.path(), &receiver, &sender);
         let cli = dir.path().join("codex-cli");
-        fs::write(&cli, "#!/bin/sh\nprintf '%s\n' \"$5\" >> \"$0.args\"\n").unwrap();
+        fs::write(
+            &cli,
+            "#!/bin/sh\n[ \"$1\" = queue ] || exit 0\nprintf '%s\n' \"$5\" >> \"$0.args\"\n",
+        )
+        .unwrap();
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
         let broker = Broker::new(Store::in_memory().unwrap(), 1024);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1060,7 +1073,7 @@ async fn lost_notice_and_unacknowledged_fetch_recover_for_all_adapters() {
         let sender = AgentKey::generate().unwrap();
         identity(dir.path(), &receiver, &sender);
         let cli = dir.path().join("codex-cli");
-        fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(&cli, "#!/bin/sh\n[ \"$1\" = queue ] || exit 0\nexit 0\n").unwrap();
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
         let broker = Broker::new(Store::in_memory().unwrap(), 1024);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1404,5 +1417,227 @@ async fn session_titles_are_additive_across_hosts_and_do_not_change_routing() {
     assert!(text.contains(CODEX_THREAD));
     codex.close().await;
     claude.close().await;
+    server.abort();
+}
+
+async fn claude_title_hook(dir: &Path, title: Option<&str>) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_interlink-mcp"))
+        .arg("sync-title")
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(
+            json!({"session_id":"claude-session", "session_title":title})
+                .to_string()
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    drop(input);
+    assert!(child.wait().await.unwrap().success());
+}
+
+fn roster_title(broker: &Broker, session: &str) -> Option<String> {
+    broker
+        .roster(now_ms())
+        .iter()
+        .find(|a| a["session"]["session_id"] == session)
+        .and_then(|a| a["session"]["title"].as_str().map(str::to_string))
+}
+
+#[tokio::test]
+async fn claude_title_hooks_follow_effective_session_overrides() {
+    let root = tempfile::tempdir().unwrap();
+    let key = AgentKey::generate().unwrap();
+    let peer = AgentKey::generate().unwrap();
+    let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = broker.clone().router();
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    for (index, args, env_override, effective) in [
+        (0, vec!["sync-title"], Some(" pinned-env "), "pinned-env"),
+        (
+            1,
+            vec!["sync-title", "--session", " pinned-cli "],
+            Some("ignored-env"),
+            "pinned-cli",
+        ),
+        (
+            2,
+            vec!["--session", "pinned-root", "sync-title"],
+            Some("ignored-env"),
+            "pinned-root",
+        ),
+        (3, vec!["sync-title"], Some("  "), "native-claude-id"),
+    ] {
+        let dir = root.path().join(index.to_string());
+        identity(&dir, &key, &peer);
+        let mut client = Client::start_options(
+            &dir,
+            "claude",
+            &url,
+            Path::new("/bin/true"),
+            effective,
+            true,
+        )
+        .await;
+        for title in ["Original native title", "Renamed native title"] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_interlink-mcp"));
+            command
+                .args(&args)
+                .env("XDG_STATE_HOME", dir.join("state"))
+                .env_remove("INTERLINK_SESSION")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if let Some(value) = env_override {
+                command.env("INTERLINK_SESSION", value);
+            }
+            let mut hook = command.spawn().unwrap();
+            let mut input = hook.stdin.take().unwrap();
+            input
+                .write_all(
+                    json!({"session_id":"native-claude-id", "session_title":title})
+                        .to_string()
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+            drop(input);
+            assert!(hook.wait().await.unwrap().success());
+            wait_until(|| roster_title(&broker, effective).as_deref() == Some(title)).await;
+            if effective != "native-claude-id" {
+                assert!(
+                    TitleStore::new(&dir.join("state/interlink"), "Claude", "native-claude-id")
+                        .unwrap()
+                        .read()
+                        .unwrap()
+                        .native
+                        .is_none()
+                );
+            }
+            let discovery = client.tool("discover", json!({})).await;
+            assert!(tool_text(&discovery).contains(title));
+            assert_eq!(broker.roster(now_ms()).len(), 1);
+        }
+        client.close().await;
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_titles_follow_renames_and_survive_failed_lookups_and_restarts() {
+    let root = tempfile::tempdir().unwrap();
+    let key = AgentKey::generate().unwrap();
+    let peer = AgentKey::generate().unwrap();
+    let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = broker.clone().router();
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let cli = root.path().join("metadata-cli");
+    fs::write(
+        &cli,
+        r#"#!/bin/sh
+[ "$1" = app-server ] || exit 0
+next=1
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialized"'*) continue ;;
+    *'"method":"initialize"'*) result='{}' ;;
+    *'"method":"thread/read"'*)
+      printf x >> "$0.reads"
+      if test -f "$0.fail"; then exit 1; fi
+      result=$(cat "$0.result") ;;
+    *) exit 2 ;;
+  esac
+  printf '{"id":%s,"result":%s}\n' "$next" "$result"
+  next=$((next + 1))
+done
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+    for host in ["claude", "codex"] {
+        let dir = root.path().join(host);
+        identity(&dir, &key, &peer);
+        let sid = if host == "codex" {
+            CODEX_THREAD
+        } else {
+            "claude-session"
+        };
+        let native = |name: Option<&str>| {
+            fs::write(
+                cli.with_extension("result"),
+                json!({"thread":{"id":sid,"name":name}}).to_string(),
+            )
+            .unwrap();
+        };
+        if host == "claude" {
+            claude_title_hook(&dir, Some("Original")).await;
+        } else {
+            native(Some("Original"));
+        }
+        let mut client = Client::start(&dir, host, &url, &cli).await;
+        if host == "codex" {
+            bind(&mut client, sid).await;
+        }
+        wait_until(|| roster_title(&broker, sid).as_deref() == Some("Original")).await;
+        success(
+            &client
+                .tool("set_session_title", json!({"title":"Pinned"}))
+                .await,
+        );
+        if host == "claude" {
+            claude_title_hook(&dir, Some("Renamed")).await;
+        } else {
+            native(Some("Renamed"));
+            let reads = fs::read(cli.with_extension("reads")).unwrap().len();
+            wait_until(|| fs::read(cli.with_extension("reads")).unwrap().len() > reads).await;
+        }
+        // The host update must be saved even while the explicit override wins.
+        sleep(Duration::from_millis(100)).await;
+        assert_eq!(roster_title(&broker, sid).as_deref(), Some("Pinned"));
+        success(&client.tool("set_session_title", json!({"title":""})).await);
+        wait_until(|| roster_title(&broker, sid).as_deref() == Some("Renamed")).await;
+        client.close().await;
+        let reads_before_failure = if host == "codex" {
+            fs::write(cli.with_extension("fail"), "").unwrap();
+            fs::read(cli.with_extension("reads")).unwrap().len()
+        } else {
+            0
+        };
+        let mut resumed = Client::start(&dir, host, &url, &cli).await;
+        if host == "codex" {
+            bind(&mut resumed, sid).await;
+        }
+        wait_until(|| roster_title(&broker, sid).as_deref() == Some("Renamed")).await;
+        if host == "codex" {
+            wait_until(|| {
+                fs::read(cli.with_extension("reads")).unwrap().len() > reads_before_failure
+            })
+            .await;
+            assert_eq!(roster_title(&broker, sid).as_deref(), Some("Renamed"));
+            fs::remove_file(cli.with_extension("fail")).unwrap();
+        }
+        success(
+            &resumed
+                .tool("set_session_title", json!({"title":"Persistent override"}))
+                .await,
+        );
+        resumed.close().await;
+        let mut reopened = Client::start(&dir, host, &url, &cli).await;
+        if host == "codex" {
+            bind(&mut reopened, sid).await;
+        }
+        wait_until(|| roster_title(&broker, sid).as_deref() == Some("Persistent override")).await;
+        reopened.close().await;
+    }
     server.abort();
 }

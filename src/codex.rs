@@ -6,8 +6,10 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
-use tokio::process::Command;
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::timeout;
 
 pub fn validate_thread_id(id: &str) -> Result<()> {
@@ -23,6 +25,95 @@ pub fn validate_thread_id(id: &str) -> Result<()> {
         bail!("expected the current Codex thread UUID, not a session name or prefix");
     }
     Ok(())
+}
+
+/// A separate metadata connection never resumes or subscribes to the owning
+/// thread, so keeping it open cannot keep that conversation artificially alive.
+pub struct TitleReader {
+    _child: Child,
+    input: ChildStdin,
+    output: BufReader<ChildStdout>,
+    next_id: u64,
+}
+
+impl TitleReader {
+    pub async fn connect(executable: &Path) -> Result<Self> {
+        let mut child = Command::new(executable)
+            .args(["app-server", "--stdio"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let input = child.stdin.take().context("missing metadata stdin")?;
+        let output = BufReader::new(child.stdout.take().context("missing metadata stdout")?);
+        let mut reader = Self {
+            _child: child,
+            input,
+            output,
+            next_id: 0,
+        };
+        reader.request("initialize", json!({"clientInfo":{"name":"interlink-title-reader","version":env!("CARGO_PKG_VERSION")}})).await?;
+        reader
+            .send(json!({"jsonrpc":"2.0","method":"initialized"}))
+            .await?;
+        Ok(reader)
+    }
+
+    pub async fn read_title(&mut self, thread_id: &str) -> Result<Option<String>> {
+        validate_thread_id(thread_id)?;
+        let response = self
+            .request(
+                "thread/read",
+                json!({"threadId":thread_id,"includeTurns":false}),
+            )
+            .await?;
+        let thread = &response["thread"];
+        if thread["id"].as_str() != Some(thread_id) {
+            bail!("metadata returned a different thread");
+        }
+        match thread.get("name") {
+            Some(Value::String(name)) => Ok(Some(name.clone())),
+            Some(Value::Null) => Ok(None),
+            // Missing fields on older hosts must not erase a previously known title.
+            _ => bail!("host did not provide title metadata"),
+        }
+    }
+
+    async fn send(&mut self, message: Value) -> Result<()> {
+        self.input
+            .write_all(format!("{message}\n").as_bytes())
+            .await?;
+        self.input.flush().await?;
+        Ok(())
+    }
+
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+            .await?;
+        loop {
+            let mut line = Vec::new();
+            (&mut self.output)
+                .take(1024 * 1024)
+                .read_until(b'\n', &mut line)
+                .await?;
+            if line.last() != Some(&b'\n') {
+                bail!("metadata response missing or too large");
+            }
+            let message: Value = serde_json::from_slice(&line)?;
+            if message["id"] == id {
+                if message.get("error").is_some() {
+                    bail!("Codex metadata request failed");
+                }
+                return message
+                    .get("result")
+                    .cloned()
+                    .context("missing metadata result");
+            }
+        }
+    }
 }
 
 // Keep enough space for platform quoting, executable paths, and the fixed arguments.

@@ -1,5 +1,5 @@
 # Merge these sections into ~/.codex/config.toml, then review them in /hooks.
-# Install Interlink 0.10.1 or newer first.
+# Install Interlink 0.10.2 or newer first.
 [mcp_servers.interlink]
 command = "interlink-mcp"
 args = ["--host", "codex"]
@@ -9,6 +9,8 @@ args = ["--host", "codex"]
 # INTERLINK_URL = "http://your-bus:9440"
 # INTERLINK_KEY = "/absolute/path/to/id.key"
 # INTERLINK_PEERS = "/absolute/path/to/peers.json"
+# When the host uses a custom CODEX_HOME, pass it explicitly to the MCP process:
+# CODEX_HOME = "/absolute/path/to/custom-codex-home"
 
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
