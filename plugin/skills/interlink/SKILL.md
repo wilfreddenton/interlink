@@ -35,7 +35,9 @@ tasks use different sessions of one peer.
 
 `send_message(to: "self", session: "<id>", text: "...")` reaches another session
 using the same key without pairing. It cannot address this session itself.
-Use `set_summary(summary: "what you're working on")` so peers can recognize it.
+Use `set_session_title(title: "Interlink development")` for an optional readable
+label and `set_summary(summary: "what you're working on")` for current work.
+Titles do not replace session IDs when addressing messages.
 
 Incoming messages appear as channel events or attributed `<interlink>` blocks.
 In the default Claude path the Stop listener handles reception; do not arm or poll
@@ -95,10 +97,12 @@ it and use `add_peer` with the verified key and an available name. Repeating a
 knock alone cannot repair one-sided trust.
 
 `message_status(msg_id)`, `conversation_history(peer)`, and `list_pending()` show
-local message state. On an inbox notice, call `receive_messages` with its
-`notification_id`. After reading, call `acknowledge_messages` with the exact
-returned receipt objects before fetching the next batch. Empty means continue
-silently. Read-only history also returns receipts that can be acknowledged.
+local message state. Every inbox notice requires calling `receive_messages` with
+its `notification_id` before ending the turn. After reading, call
+`acknowledge_messages` with the exact returned receipt objects before acting on
+the messages or fetching another batch. End silently only after an empty fetch
+or acknowledgement. If either tool is unavailable or fails, report the blocker.
+Read-only history also returns receipts that can be acknowledged.
 `consume=true` explicitly consumes history before replying. Progress needs no reply; highlight questions,
 failures, and substantive results. Inbound consumption persists across restarts.
 The ordinary outbox and outbound log are in memory; `bus_accepted` means relay

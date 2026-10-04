@@ -47,7 +47,11 @@ pub struct Notice {
 impl Notice {
     pub fn text(&self) -> String {
         format!(
-            "[Interlink inbox notice] Call receive_messages(notification_id=\"{}\") to fetch current unread peer messages, then call acknowledge_messages with the returned receipt IDs after reading them. This notice contains no peer request. If nothing remains unread, continue silently without a user-facing reply. Routine progress needs no reply.",
+            "[Interlink inbox notice] Check the inbox before ending this turn.\n\
+             1. Call Interlink's receive_messages(notification_id=\"{}\"). If necessary, discover the Interlink MCP tools first.\n\
+             2. Read the returned messages, then call acknowledge_messages(messages=[the exact returned receipt objects, each containing sender and msg_id]). Acknowledge before acting on a request or fetching another batch.\n\
+             3. Only after fetching: if the inbox is empty, end silently. After acknowledgement, handle messages within the operator's authorized scope; routine progress needs no user-facing reply.\n\
+             If either tool is unavailable or fails, report that blocker. Do not silently skip the inbox check.",
             self.id
         )
     }

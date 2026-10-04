@@ -12,10 +12,10 @@ adapter uses `codex queue`; `--no-daemon`, remote app servers, and the desktop a
 are not supported by this adapter. Ephemeral (`codex exec --ephemeral`) threads
 cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.10.0 or newer:
+Install Interlink 0.10.1 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.10.0 --locked
+cargo install interlink-mcp --version 0.10.1 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`
@@ -91,6 +91,16 @@ use the shared `send_message` status fields and server instructions.
 
 ## Validation
 
+If inbox notices start turns but the agent cannot fetch or acknowledge, inspect
+`/mcp verbose` in that conversation. Its Interlink tool list must include both
+`receive_messages` and `acknowledge_messages`. A queued notice can reach a chat
+even when that chat's MCP tools are unavailable. Check the configured executable,
+enabled state, and tool allow/deny lists with `codex mcp get interlink --json`.
+After an upgrade, reconnect the MCP server or restart and resume Codex if the
+active connection still exposes the old tool list. Then fetch and acknowledge
+the unread messages. Changing the notification retry interval cannot restore
+missing tools.
+
 `just test` includes process-level MCP tests for Codex binding, isolation,
 Claude/Codex and same-identity Codex/Codex messaging, and retry after local queue
 failure, bounded retries and saved-failure recovery. Shared-policy and pairing
@@ -108,8 +118,13 @@ localhost socket access; diagnostics go to `target/host-validation/`. On Codex
 0.160.0, all four sample hooks were first listed as untrusted, then reviewed and
 trusted by supplying their exact current hashes
 as invocation-local config. Lifecycle hooks bound two ephemeral threads to
-separate Interlink sessions. Those ephemeral threads validate binding only; they
-are not used for queued delivery. Normal user configuration and saved hook trust
+separate Interlink sessions. Those ephemeral threads are not used for real queued
+delivery. The fixture also checks that both inbox tools
+are exposed through the owning thread's MCP connection, sends a sibling message,
+and calls fetch and acknowledgement through Codex. Queue delivery is stubbed for
+these ephemeral threads. This verifies the tool connection and consumption, not
+whether a production model follows the notice instructions.
+Normal user configuration and saved hook trust
 were unchanged. This validates trusted hook execution; it does not automate the
 interactive `/hooks` review UI or call a production model.
 

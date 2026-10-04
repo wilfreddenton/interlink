@@ -16,6 +16,12 @@ Fetching does not consume anything. After reading a response, call
 with its exact receipt objects. A lost fetch response remains unread. A stale
 notice always reads current state and never replays acknowledged bodies.
 
+An inbox notice requires a tool call even when it is the only event in an idle
+conversation. Silence applies only after an empty fetch or acknowledgement; it
+does not mean skipping the inbox check. If a turn ends without calling either
+tool, messages remain unread and notification retries continue. Unavailable
+tools and fetch or acknowledgement errors should be surfaced as blockers.
+
 There is one current notification reservation per session. It expires after
 30 seconds, then retries with 60, 120, 240, and at most 300 seconds between
 reservations while attention-worthy messages remain unread. Startup and a
@@ -209,8 +215,10 @@ localhost socket access. The recorded validation used Codex 0.160.0 and Claude
 Code 2.1.278 with local response fixtures, not production models:
 
 - Codex: reviewed hook hashes supplied for that invocation, then lifecycle hooks
-  binding two ephemeral threads to separate MCP sessions. This tests binding,
-  not queued delivery to ephemeral threads, which is unsupported.
+  binding two ephemeral threads to separate MCP sessions. Both inbox tools are
+  checked in each thread's tool inventory, then a sibling message is fetched and
+  acknowledged through Codex's MCP connection. Queued delivery to ephemeral
+  threads is unsupported, so that handoff uses a stub.
 - Claude: a persistent stream-JSON process, a three-second listener renewal,
   Stop re-arming, and a later fixture message causing another turn.
 
