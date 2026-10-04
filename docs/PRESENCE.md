@@ -69,7 +69,7 @@ Presence retention and message validity are separate:
   presence retention therefore does not promise three-day message delivery.
 - Unregistering or expiring presence does not remove its broker queue. No
   abandoned-queue sweep is implemented.
-- A `sent` message status means relay acceptance, not that the peer read it.
+- A `bus_accepted` message status means relay acceptance, not that the peer read it.
 
 Tests cover roster retention, age reporting, unregister, routing classification,
 and MCP shutdown cleanup. Host-independent process tests use real local brokers;

@@ -16,7 +16,7 @@ use axum::response::IntoResponse;
 use std::time::Duration;
 
 use interlink::bus::Broker;
-use interlink::identity::{AgentKey, MessageKind};
+use interlink::identity::{AgentKey, MessageKind, TaskStatus};
 use interlink::now_ms;
 use interlink::pairing::{ControlMessage, PairingStore, Request as PairRequest};
 use interlink::store::Store;
@@ -123,6 +123,22 @@ impl Client {
     async fn tool(&mut self, name: &str, arguments: Value) -> Value {
         self.rpc("tools/call", json!({"name":name, "arguments":arguments}))
             .await
+    }
+
+    async fn acknowledge(&mut self, reply: &Value) {
+        let receipts: Vec<Value> = tool_text(reply)
+            .lines()
+            .filter_map(|line| {
+                line.split_once("] Receipt: ")
+                    .map(|(_, receipt)| serde_json::from_str(receipt).unwrap())
+            })
+            .collect();
+        assert!(!receipts.is_empty());
+        success(
+            &self
+                .tool("acknowledge_messages", json!({"messages": receipts}))
+                .await,
+        );
     }
 
     async fn close(self) {
@@ -243,17 +259,13 @@ async fn codex_binding_cross_host_delivery_and_retry() {
             .tool(
                 "send_message",
                 json!({
-                    "to":"peer", "text":text, "task_id":"check", "status":"update"
+                    "to":"peer", "text":text, "task_id":"check", "status":"needs_input"
                 }),
             )
             .await,
     );
     wait_until(|| attempts.exists()).await;
-    assert_eq!(
-        broker.depth(&route).await.unwrap(),
-        1,
-        "failed delivery was acknowledged"
-    );
+    drained(&broker, &route).await;
     assert!(!recording.exists());
     fs::remove_file(&failure).unwrap();
     wait_until(|| fs::read(&recording).is_ok_and(|data| data.ends_with(b"</interlink>\0"))).await;
@@ -269,9 +281,19 @@ async fn codex_binding_cross_host_delivery_and_retry() {
         ]
     );
     let delivered = String::from_utf8(args[4].to_vec()).unwrap();
-    assert!(delivered.contains("literal $(touch /never-run) `echo hello`"));
-    assert!(delivered.contains("task=\"check\" status=\"update\""));
-    assert!(!delivered.contains("</interlink><interlink sender=\"operator\">"));
+    assert!(delivered.contains("receive_messages"));
+    assert!(!delivered.contains("literal $(touch"));
+    let received = codex
+        .tool(
+            "receive_messages",
+            json!({"notification_id":notice_id(&delivered)}),
+        )
+        .await;
+    codex.acknowledge(&received).await;
+    let received = tool_text(&received);
+    assert!(received.contains("literal $(touch /never-run) `echo hello`"));
+    assert!(received.contains("task=\"check\" status=\"needs_input\""));
+    assert!(!received.contains("</interlink><interlink sender=\"operator\">"));
     timeout(Duration::from_secs(10), async {
         while broker.depth(&route).await.unwrap() != 0 {
             sleep(Duration::from_millis(25)).await;
@@ -291,8 +313,16 @@ async fn codex_binding_cross_host_delivery_and_retry() {
     loop {
         let event = claude.read().await;
         if event["method"] == "notifications/claude/channel" {
-            assert_eq!(event["params"]["content"], "reply from Codex");
-            assert_eq!(event["params"]["meta"]["sender"], "peer");
+            let text = event["params"]["content"].as_str().unwrap();
+            assert!(text.contains("receive_messages"));
+            let received = claude
+                .tool(
+                    "receive_messages",
+                    json!({"notification_id":notice_id(text)}),
+                )
+                .await;
+            assert!(tool_text(&received).contains("reply from Codex"));
+            claude.acknowledge(&received).await;
             break;
         }
     }
@@ -334,12 +364,9 @@ async fn codex_binding_cross_host_delivery_and_retry() {
             )
             .await,
     );
-    wait_until(|| {
-        fs::read_to_string(&recording)
-            .unwrap()
-            .contains("sibling message")
-    })
-    .await;
+    wait_until(|| fs::read(&recording).is_ok_and(|bytes| bytes.len() > before.len())).await;
+    let received = codex.tool("receive_messages", json!({})).await;
+    assert!(tool_text(&received).contains("sibling message"));
     other.close().await;
     wait_until(|| broker.roster(now_ms()).len() == 2).await;
     codex.close().await;
@@ -347,6 +374,15 @@ async fn codex_binding_cross_host_delivery_and_retry() {
     claude.close().await;
     assert!(broker.roster(now_ms()).is_empty());
     server.abort();
+}
+
+fn notice_id(text: &str) -> &str {
+    text.split("notification_id=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
 }
 
 fn tool_text(reply: &Value) -> &str {
@@ -403,7 +439,7 @@ async fn inbox_survives_server_restart_until_hook_consumes_it() {
     broker.enqueue(&route, json!(msg), now_ms()).await.unwrap();
     drained(&broker, &route).await;
     first.close().await;
-    let second = Client::start_options(
+    let mut second = Client::start_options(
         dir.path(),
         "claude",
         &url,
@@ -426,7 +462,16 @@ async fn inbox_survives_server_restart_until_hook_consumes_it() {
     .unwrap()
     .unwrap();
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("unread before restart"));
+    let notice = String::from_utf8_lossy(&output.stderr);
+    assert!(notice.contains("receive_messages"));
+    assert!(!notice.contains("unread before restart"));
+    let received = second
+        .tool(
+            "receive_messages",
+            json!({"notification_id":notice_id(&notice)}),
+        )
+        .await;
+    assert!(tool_text(&received).contains("unread before restart"));
     let inbox = dir
         .path()
         .join("state/interlink/inbox/restart-session.jsonl");
@@ -442,14 +487,15 @@ async fn inbox_survives_server_restart_until_hook_consumes_it() {
 }
 
 #[tokio::test]
-async fn codex_failed_delivery_is_recoverable_and_does_not_block_following_messages() {
+async fn codex_failed_notice_retains_messages_and_recovers_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     let receiver = AgentKey::generate().unwrap();
     let sender = AgentKey::generate().unwrap();
     identity(dir.path(), &receiver, &sender);
     let cli = dir.path().join("codex-cli");
-    fs::write(&cli, "#!/bin/sh\ncase \"$5\" in *'fail this delivery'*) if test -f \"$0.fail\"; then printf x >> \"$0.attempts\"; exit 1; fi;; esac\nprintf '%s\\n' \"$5\" >> \"$0.args\"\n").unwrap();
+    fs::write(&cli, "#!/bin/sh\nif test -f \"$0.fail\"; then printf x >> \"$0.attempts\"; exit 1; fi\nprintf '%s\\n' \"$5\" >> \"$0.args\"\n").unwrap();
     fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(cli.with_extension("fail"), "").unwrap();
     let recording = cli.with_extension("args");
     let broker = Broker::new(Store::in_memory().unwrap(), 1024);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -479,36 +525,27 @@ async fn codex_failed_delivery_is_recoverable_and_does_not_block_following_messa
             .await
             .unwrap();
     }
-    timeout(Duration::from_secs(10), async {
-        loop {
-            let reply = client
-                .tool("message_status", json!({"msg_id":"large"}))
-                .await;
-            if tool_text(&reply).contains("received") {
-                break;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        broker.depth(&route).await.unwrap(),
-        2,
-        "message acknowledged before failure was saved"
-    );
-    fs::remove_dir(&failure_path).unwrap();
     drained(&broker, &route).await;
-    assert!(
-        fs::read_to_string(&recording)
-            .unwrap()
-            .contains("following message")
-    );
-    assert!(
-        !fs::read_to_string(&recording)
-            .unwrap()
-            .contains("a long report line")
-    );
+    wait_until(|| fs::read(cli.with_extension("attempts")).is_ok_and(|v| v.len() == 3)).await;
+    assert!(!recording.exists());
+    let history = client
+        .tool("conversation_history", json!({"peer":"peer"}))
+        .await;
+    assert!(tool_text(&history).contains(&long_text));
+    assert!(tool_text(&history).contains("following message"));
+    fs::remove_dir(&failure_path).unwrap();
+    client.close().await;
+    let mailbox_path = dir
+        .path()
+        .join("state/interlink/mailbox")
+        .join(receiver.id().to_b64())
+        .join(format!("{CODEX_THREAD}.json"));
+    let mut expired: Value = serde_json::from_slice(&fs::read(&mailbox_path).unwrap()).unwrap();
+    expired["notice"]["retry_at"] = json!(0);
+    fs::write(&mailbox_path, serde_json::to_vec(&expired).unwrap()).unwrap();
+    let mut client = Client::start(dir.path(), "codex", &url, &cli).await;
+    bind(&mut client, CODEX_THREAD).await;
+    wait_until(|| failure_path.is_file()).await;
     client.close().await;
     let mut client = Client::start(dir.path(), "codex", &url, &cli).await;
     bind(&mut client, CODEX_THREAD).await;
@@ -517,65 +554,36 @@ async fn codex_failed_delivery_is_recoverable_and_does_not_block_following_messa
         .await;
     let entries: Value = serde_json::from_str(tool_text(&reply)).unwrap();
     assert_eq!(entries.as_array().unwrap().len(), 1);
-    assert_eq!(entries[0]["msg_id"], "large");
     let id = entries[0]["id"].as_str().unwrap();
     let reply = client
         .tool("failed_deliveries", json!({"action":"read","id":id}))
         .await;
-    assert!(tool_text(&reply).contains(&long_text));
-    success(
-        &client
-            .tool("failed_deliveries", json!({"action":"discard","id":id}))
-            .await,
-    );
-
-    fs::write(cli.with_extension("fail"), "").unwrap();
-    for (id, text) in [
-        ("failed", "fail this delivery"),
-        ("after", "after bounded retries"),
-    ] {
-        broker
-            .enqueue(
-                &route,
-                json!(sender.sign(receiver.id(), text, now_ms(), id)),
-                now_ms(),
-            )
-            .await
-            .unwrap();
-    }
-    drained(&broker, &route).await;
-    assert_eq!(fs::read(cli.with_extension("attempts")).unwrap().len(), 3);
-    assert!(
-        fs::read_to_string(&recording)
-            .unwrap()
-            .contains("after bounded retries")
-    );
+    assert!(tool_text(&reply).contains("receive_messages"));
     fs::remove_file(cli.with_extension("fail")).unwrap();
-    let reply = client
-        .tool("failed_deliveries", json!({"action":"list"}))
-        .await;
-    let entries: Value = serde_json::from_str(tool_text(&reply)).unwrap();
     success(
         &client
-            .tool(
-                "failed_deliveries",
-                json!({"action":"retry","id":entries[0]["id"]}),
-            )
+            .tool("failed_deliveries", json!({"action":"retry","id":id}))
             .await,
     );
-    assert!(
-        fs::read_to_string(&recording)
-            .unwrap()
-            .contains("fail this delivery")
-    );
+    let notice = fs::read_to_string(&recording).unwrap();
+    assert!(!notice.contains("a long report line"));
+    let reply = client
+        .tool(
+            "receive_messages",
+            json!({"notification_id":notice_id(&notice)}),
+        )
+        .await;
+    assert!(tool_text(&reply).contains(&long_text));
+    assert!(tool_text(&reply).contains("following message"));
+    client.acknowledge(&reply).await;
     let reply = client
         .tool("failed_deliveries", json!({"action":"list"}))
         .await;
     assert_eq!(tool_text(&reply), "[]");
     let status = client
-        .tool("message_status", json!({"msg_id":"failed"}))
+        .tool("message_status", json!({"msg_id":"large"}))
         .await;
-    assert!(tool_text(&status).contains("received"));
+    assert!(tool_text(&status).contains("receiver_acknowledged"));
     assert!(!tool_text(&status).contains("delivery_failed"));
     client.close().await;
     server.abort();
@@ -827,12 +835,319 @@ async fn pairing_conflict_retires_request_and_allows_following_messages() {
     let output = fs::read_to_string(cli.with_extension("args")).unwrap();
     assert!(output.contains("Pairing could not complete"));
     assert!(output.contains(&format!("use add_peer with key {}", other.id().to_b64())));
-    assert!(output.contains("after-conflict"));
+
     assert!(output.contains("Paired with 'peer'"));
-    assert!(output.contains("after-renamed"));
+    let messages = client.tool("receive_messages", json!({})).await;
+    assert!(tool_text(&messages).contains("after-conflict"));
+    assert!(tool_text(&messages).contains("after-renamed"));
     let peers = client.tool("list_peers", json!({})).await;
     assert!(!tool_text(&peers).contains("old-name"));
     assert!(!tool_text(&peers).contains(&other.id().to_b64()));
     client.close().await;
     server.abort();
+}
+
+#[tokio::test]
+async fn busy_host_history_consumption_and_restart_for_all_adapters() {
+    for (host, channels) in [("codex", false), ("claude", true), ("claude", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let receiver = AgentKey::generate().unwrap();
+        let sender = AgentKey::generate().unwrap();
+        identity(dir.path(), &receiver, &sender);
+        let cli = dir.path().join("codex-cli");
+        fs::write(&cli, "#!/bin/sh\nprintf '%s\n' \"$5\" >> \"$0.args\"\n").unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+        let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let router = broker.clone().router();
+        let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+        let mut client =
+            Client::start_options(dir.path(), host, &url, &cli, CODEX_THREAD, channels).await;
+        if host == "codex" {
+            bind(&mut client, CODEX_THREAD).await;
+        }
+        let route = format!("{}#{CODEX_THREAD}", receiver.id().to_b64());
+        let first = sender.sign_full(
+            receiver.id(),
+            "question requiring an answer",
+            now_ms(),
+            "question",
+            MessageKind::Message,
+            Some("task"),
+            Some(TaskStatus::NeedsInput),
+            None,
+        );
+        broker
+            .enqueue(&route, json!(first), now_ms())
+            .await
+            .unwrap();
+        drained(&broker, &route).await;
+        let notice = if host == "codex" {
+            wait_until(|| cli.with_extension("args").exists()).await;
+            fs::read_to_string(cli.with_extension("args")).unwrap()
+        } else if channels {
+            loop {
+                let event = client.read().await;
+                if event["method"] == "notifications/claude/channel" {
+                    break event["params"]["content"].as_str().unwrap().to_owned();
+                }
+            }
+        } else {
+            let output = timeout(
+                Duration::from_secs(10),
+                Command::new(env!("CARGO_BIN_EXE_interlink-mcp"))
+                    .args(["wait", "--session", CODEX_THREAD])
+                    .env("XDG_STATE_HOME", dir.path().join("state"))
+                    .env("INTERLINK_CHANNELS", "0")
+                    .stdin(Stdio::null())
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(output.status.code(), Some(2));
+            String::from_utf8(output.stderr).unwrap()
+        };
+        assert!(!notice.contains("question requiring an answer"));
+        let ts = now_ms();
+        for (id, status, offset) in [
+            ("old-progress", TaskStatus::Update, 0),
+            ("new-progress", TaskStatus::Update, 1),
+            ("final-result", TaskStatus::Result, 2),
+        ] {
+            let msg = sender.sign_full(
+                receiver.id(),
+                id,
+                ts + offset,
+                id,
+                MessageKind::Message,
+                Some("task"),
+                Some(status),
+                None,
+            );
+            broker.enqueue(&route, json!(msg), now_ms()).await.unwrap();
+        }
+        drained(&broker, &route).await;
+        let history = client
+            .tool("conversation_history", json!({"peer":"peer"}))
+            .await;
+        assert!(tool_text(&history).contains("superseded by"));
+        let status = client
+            .tool("message_status", json!({"msg_id":"question"}))
+            .await;
+        assert!(
+            !tool_text(&status).contains("receiver_acknowledged"),
+            "read-only history consumed the question"
+        );
+        let history = client
+            .tool(
+                "conversation_history",
+                json!({"peer":"peer", "consume":true, "limit":1}),
+            )
+            .await;
+        assert!(tool_text(&history).contains("final-result"));
+        let status = client
+            .tool("message_status", json!({"msg_id":"question"}))
+            .await;
+        assert!(
+            !tool_text(&status).contains("receiver_acknowledged"),
+            "limited history consumed an unreturned question"
+        );
+        client
+            .tool(
+                "conversation_history",
+                json!({"peer":"peer", "consume":true}),
+            )
+            .await;
+        client.close().await;
+        let mut client =
+            Client::start_options(dir.path(), host, &url, &cli, CODEX_THREAD, channels).await;
+        if host == "codex" {
+            bind(&mut client, CODEX_THREAD).await;
+        }
+        broker
+            .enqueue(&route, json!(first), now_ms())
+            .await
+            .unwrap();
+        drained(&broker, &route).await;
+        let received = client
+            .tool(
+                "receive_messages",
+                json!({"notification_id":notice_id(&notice)}),
+            )
+            .await;
+        assert!(
+            tool_text(&received).starts_with("No unread messages"),
+            "{host}/{channels}: {received}"
+        );
+        let history = client
+            .tool("conversation_history", json!({"peer":"peer"}))
+            .await;
+        assert_eq!(
+            tool_text(&history)
+                .matches("question requiring an answer")
+                .count(),
+            1
+        );
+        if host == "codex" {
+            assert_eq!(
+                fs::read_to_string(cli.with_extension("args"))
+                    .unwrap()
+                    .matches("[Interlink inbox notice]")
+                    .count(),
+                1
+            );
+        }
+        client.close().await;
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn persistence_failure_retains_broker_message_until_local_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let receiver = AgentKey::generate().unwrap();
+    let sender = AgentKey::generate().unwrap();
+    identity(dir.path(), &receiver, &sender);
+    let path = dir
+        .path()
+        .join("state/interlink/mailbox")
+        .join(receiver.id().to_b64())
+        .join("blocked.json");
+    fs::create_dir_all(&path).unwrap();
+    let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = broker.clone().router();
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let mut client = Client::start_options(
+        dir.path(),
+        "claude",
+        &url,
+        Path::new("unused"),
+        "blocked",
+        false,
+    )
+    .await;
+    let route = format!("{}#blocked", receiver.id().to_b64());
+    broker
+        .enqueue(
+            &route,
+            json!(sender.sign(receiver.id(), "must survive", now_ms(), "blocked")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(500)).await;
+    assert_eq!(broker.depth(&route).await.unwrap(), 1);
+    fs::remove_dir(&path).unwrap();
+    drained(&broker, &route).await;
+    let received = client.tool("receive_messages", json!({})).await;
+    assert!(tool_text(&received).contains("must survive"));
+    client.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn lost_notice_and_unacknowledged_fetch_recover_for_all_adapters() {
+    for (host, channels) in [("codex", false), ("claude", true), ("claude", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let receiver = AgentKey::generate().unwrap();
+        let sender = AgentKey::generate().unwrap();
+        identity(dir.path(), &receiver, &sender);
+        let cli = dir.path().join("codex-cli");
+        fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+        let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let router = broker.clone().router();
+        let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+        let path = dir
+            .path()
+            .join("state/interlink/mailbox")
+            .join(receiver.id().to_b64())
+            .join(format!("{CODEX_THREAD}.json"));
+        let route = format!("{}#{CODEX_THREAD}", receiver.id().to_b64());
+        let mut client =
+            Client::start_options(dir.path(), host, &url, &cli, CODEX_THREAD, channels).await;
+        if host == "codex" {
+            bind(&mut client, CODEX_THREAD).await;
+        }
+        broker
+            .enqueue(
+                &route,
+                json!(sender.sign(receiver.id(), "first body", now_ms(), "first")),
+                now_ms(),
+            )
+            .await
+            .unwrap();
+        drained(&broker, &route).await;
+        wait_until(|| {
+            fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|data| {
+                    data["notice"]["state"]
+                        .as_str()
+                        .is_some_and(|state| state != "preparing")
+                })
+        })
+        .await;
+        let first: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let first_id = first["notice"]["id"].as_str().unwrap();
+        client.close().await;
+        // Expire only the persisted clock fixture while its owning process is stopped.
+        let mut expired: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        expired["notice"]["retry_at"] = json!(0);
+        fs::write(&path, serde_json::to_vec(&expired).unwrap()).unwrap();
+        let mut client =
+            Client::start_options(dir.path(), host, &url, &cli, CODEX_THREAD, channels).await;
+        if host == "codex" {
+            bind(&mut client, CODEX_THREAD).await;
+        }
+        wait_until(|| {
+            let data: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            data["notice"]["id"]
+                .as_str()
+                .is_some_and(|id| id != first_id)
+        })
+        .await;
+        let dropped = client
+            .tool("receive_messages", json!({"notification_id":first_id}))
+            .await;
+        assert!(tool_text(&dropped).contains("first body"));
+        client.close().await;
+        let mut client =
+            Client::start_options(dir.path(), host, &url, &cli, CODEX_THREAD, channels).await;
+        if host == "codex" {
+            bind(&mut client, CODEX_THREAD).await;
+        }
+        let recovered = client.tool("receive_messages", json!({})).await;
+        assert!(tool_text(&recovered).contains("first body"));
+        broker
+            .enqueue(
+                &route,
+                json!(sender.sign(receiver.id(), "second body", now_ms(), "second")),
+                now_ms(),
+            )
+            .await
+            .unwrap();
+        drained(&broker, &route).await;
+        client.acknowledge(&recovered).await;
+        client.acknowledge(&recovered).await;
+        let remaining = client
+            .tool("receive_messages", json!({"notification_id":first_id}))
+            .await;
+        assert!(!tool_text(&remaining).contains("first body"));
+        assert!(tool_text(&remaining).contains("second body"));
+        client.acknowledge(&remaining).await;
+        assert!(
+            tool_text(&client.tool("receive_messages", json!({})).await).starts_with("No unread")
+        );
+        client.close().await;
+        server.abort();
+    }
 }

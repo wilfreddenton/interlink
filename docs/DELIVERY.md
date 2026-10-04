@@ -4,17 +4,71 @@ The shared gate verifies identity, recipient, authorization, freshness, and
 replay state before a message reaches a host adapter. Pairing control messages
 have their own handler and generate pairing notices. See [the trust model](../DESIGN.md#the-trust-gate).
 
-## Host paths
+## Shared inbox and consumption
 
-| Host | Last hop | Broker acknowledgment follows |
-|---|---|---|
-| Claude Code, default | Append to local inbox; Stop hook drains it | Successful synced inbox append |
-| Claude Code, optional channels | `notifications/claude/channel` | Successful notification send |
-| Codex CLI | `codex queue` for the bound thread | Queue acceptance, or durable retention of a failed delivery |
+Verified peer messages are saved to `mailbox/<identity>/<session>.json` before
+the broker is acknowledged. This shared path serves Claude's Stop listener,
+Claude channels, and Codex. A host receives a small inbox notice containing a
+`notification_id`, rather than a copy of each message body. The agent calls
+`receive_messages(notification_id="...")` to fetch current unread messages.
+Fetching does not consume anything. After reading a response, call
+`acknowledge_messages(messages=[{"sender":"<public key>","msg_id":"<id>"}])`
+with its exact receipt objects. A lost fetch response remains unread. A stale
+notice always reads current state and never replays acknowledged bodies.
 
-These are transport handoffs, not acknowledgments that the model consumed or
-completed the request. The adapters use one path per session. Retries, process
-restarts, and a crash during a handoff can still cause duplicate delivery.
+There is one current notification reservation per session. It expires after
+30 seconds, then retries with 60, 120, 240, and at most 300 seconds between
+reservations while attention-worthy messages remain unread. Startup and a
+one-second reconciliation loop recover lost notices and interrupted sends.
+Notifications already queued in a host cannot be retracted, so duplicate wake-ups
+are possible. Neither missing notice IDs nor manual/history consumption can
+permanently block future notices. Persisted notices from the earlier mailbox
+format expire on their next reconciliation.
+
+The default fetch batch is 20 messages, with a maximum of 100; non-progress
+messages come first. Acknowledge the returned receipts before fetching another
+batch. Acknowledgement is idempotent, scoped to sender key and message ID, and
+never consumes a newer arrival. It also releases a reservation when all messages
+covered by that reservation have been acknowledged or superseded. Notice IDs are
+advisory and are not required for consumption.
+
+`conversation_history(peer, consume=false)` is read-only. Prefer reading it and
+acknowledging exact receipts afterward. `consume=true` explicitly consumes exactly
+the returned inbound records before the response is sent. This shortcut can lose
+the response after consumption; reread history to recover it. All consumption
+persists across MCP restarts with the same identity and session.
+
+Progress (`status=update`) does not wake the host. A newer update supersedes
+older progress for the same sender key, sender session hint, and task ID. A
+terminal result, failure, or cancellation supersedes progress for that task,
+including progress that arrives late. Superseded messages remain in history.
+Questions, failures, and other non-progress messages are preserved individually.
+Use distinct task IDs for new work. The sender session is the existing unsigned
+`reply_to` hint, not a separately authenticated session identity.
+
+## Delivery states
+
+| State | What it confirms |
+|---|---|
+| `pending` | Outbound message is in this MCP process's outbox |
+| `bus_accepted` | At least one relay accepted it; remote receiver state is unknown |
+| `receiver_stored` | Verified body is committed to the receiving session's mailbox |
+| `inbox_queued` | A notice was appended to Claude's local Stop-listener inbox |
+| `notification_sent` | A notice was written to Claude's MCP channel |
+| `host_queued` | Codex accepted the notice into its queue |
+| `delivery_failed` | A host notice failed; bodies remain in the shared mailbox |
+| `receiver_acknowledged` | The receiver explicitly acknowledged the message, or consumed it through history |
+
+Inbound states are local to the receiver. No signed remote receipt protocol is
+implemented: the sender never infers acknowledgement from relay acceptance.
+Acknowledgement records an explicit consumption request, not model comprehension or task completion.
+Host notification acceptance is also not a read receipt. Messages joining an
+already outstanding notice can remain `receiver_stored` until a later handoff or acknowledgement.
+
+This is not exactly-once delivery. Retries can repeat a notice or an unacknowledged
+fetch. Acknowledged bodies are excluded from subsequent unread fetches, while
+history remains available. Existing pre-upgrade notices containing full bodies
+cannot be retracted. Pairing control notices retain their separate path.
 
 ## Claude default: inbox and Stop listener
 
@@ -35,7 +89,7 @@ path. Hooks and MCP must still be enabled under the host's normal configuration
 and organizational policy. Registering the MCP server alone does not install
 the Stop hook. See [plugin setup](../plugin/README.md).
 
-The listener waits for complete inbox records, writes attributed messages to
+The listener waits for complete inbox records, writes inbox notices (or legacy attributed messages) to
 stderr, flushes the output, commits the cursor, and exits 2. Claude's documented
 `asyncRewake` behavior delivers that output and wakes an idle session. A subsequent
 Stop starts another listener. A per-session exclusive OS file lock prevents
@@ -70,16 +124,26 @@ consistent when overriding paths.
 
 | Path under the state root | Contents |
 |---|---|
-| `inbox/<session>.jsonl` | Claude messages appended after verification |
+| `mailbox/<identity>/<session>.json` | Shared inbound bodies, consumption, supersession, and notice state |
+| `inbox/<session>.jsonl` | Claude notices, pairing notices, and legacy messages |
 | `inbox/<session>.cursor` | Byte offset consumed by the listener |
 | `inbox/<session>.lock`, `.io-lock` | Listener and read/write coordination |
 | `pairing/<identity>/<session>.json` | Pending requests and unsent control messages |
 | `failed/<identity>/<session>.json` | Codex failed deliveries retained for recovery |
 | `task/<session>/` | Best-effort progress marker and timestamps |
 
-Pairing and failed-delivery files have sidecar locks; atomic writes use temporary
+Mailbox, pairing, and failed-delivery files have sidecar locks; atomic writes use temporary
 files in the destination directory. `peers.json` is separate shared configuration,
 protected by its own lock and atomic replacement.
+
+Admission to the shared mailbox is bounded at 4,096 records and 32 MiB of
+serialized records per identity/session. Notice metadata and acknowledgement
+updates may grow it beyond the byte admission cap so a full mailbox can still
+be consumed. On arrival, acknowledged and superseded records older than the
+24-hour signature acceptance window are pruned. Unread records are not evicted.
+If full, corrupt, or unwritable, new messages remain on the broker until storage
+can accept them. A notifier lock prevents concurrent MCP processes for the same
+session from issuing independent wake-ups. Do not remove live mailbox files.
 
 Startup preserves the Claude inbox and cursor. Writers sync complete JSONL
 records before broker acknowledgment. Readers start at the cursor and return up
@@ -113,23 +177,32 @@ cannot be rebound to another thread. It does not advertise Claude's channel
 capability. See [Codex setup and recovery](../codex/README.md).
 
 The adapter invokes `codex queue` with process arguments, no shell, a 30-second
-timeout, and a 12 KiB rendered-message limit. Nonzero exits get at most three
+timeout, and a 12 KiB rendered-notice limit. Peer bodies are fetched through MCP,
+so large reports do not enter the CLI argument. Nonzero exits get at most three
 automatic attempts, with two-second backoff. Permanent failures, exhausted retries,
-and timeouts are saved locally before acknowledging the broker, allowing later
-messages to proceed. Timeouts have an uncertain outcome; manual retry can duplicate
-an already accepted message.
+and timeouts save the notice for recovery. The mailbox retries after the cooldown
+as well. Timeouts have an uncertain outcome; any retry can duplicate a notice. Ordinary bodies are already durable and
+broker polling continues even if the notifier cannot save its failure.
 
 `failed_deliveries` supports `list`, `read`, `retry`, and `discard`. Its store holds
-64 failures per session. If persistence fails or the store is full, the current
-message stays unacknowledged and only persistence is retried. The ordinary
-conversation log is still in memory; use the recovery tool after a restart.
+64 failures per session, with at most one slot for current ordinary notice failures.
+New failures replace that slot, and a successful automatic notice handoff clears it.
+Legacy failures remain untouched. It also reads pre-upgrade saved full-body failures and
+pairing notices. For current ordinary messages, use `receive_messages` or history
+to recover the bodies independently of the failed notice. Discard removes the
+saved failure only, not unread mailbox messages. Failed notices expire even without
+manual recovery. Diagnostic-storage errors do not block the next notification attempt.
+The outbound log and ordinary outbox remain in memory.
 
 ## Validation
 
 `just test` exercises the shared gate, inbox restart/cursor behavior, concurrent
 appends, partial-record repair, default renewal interval with a paused clock,
-Codex binding, retry limits, saved failures, and cross-host delivery. Process
-integration tests use local brokers and a recording queue executable.
+Codex binding, retry limits, saved failures, and cross-host delivery. Shared
+regressions cover busy-host history consumption, restart deduplication, notification
+expiry, lost fetch responses, explicit acknowledgement, progress coalescing, and
+storage failures across all three adapters. Process integration tests use local
+brokers and a recording queue executable.
 
 `just host-test` requires Python 3.11+, installed `codex` and `claude` CLIs, and
 localhost socket access. The recorded validation used Codex 0.160.0 and Claude

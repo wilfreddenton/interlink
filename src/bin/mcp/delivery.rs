@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use interlink::codex::{DeliveryError, deliver as deliver_codex};
 use interlink::inbox::Inbox;
+use interlink::mailbox::Notice;
 use rmcp::RoleServer;
 use rmcp::model::{CustomNotification, ServerNotification};
 use rmcp::service::Peer;
@@ -22,6 +23,52 @@ pub(super) enum Sink {
 }
 
 impl Sink {
+    pub(super) async fn deliver_notice(&self, notice: &Notice) -> bool {
+        let text = notice.text();
+        let mut reason = String::new();
+        for attempt in 0..3 {
+            match self
+                .try_deliver(&text, "Interlink", &notice.id, None, None, None)
+                .await
+            {
+                Ok(()) => {
+                    if let Sink::Codex(inner) = self
+                        && let Err(e) = inner.failed_deliveries().and_then(|s| s.clear_notices())
+                    {
+                        tracing::warn!("clearing stale notice failures: {e}");
+                    }
+                    return true;
+                }
+                Err(e) => {
+                    reason = e.to_string();
+                    if e.downcast_ref::<DeliveryError>()
+                        .is_some_and(|e| !e.retryable)
+                    {
+                        break;
+                    }
+                    if attempt < 2 {
+                        backoff().await;
+                    }
+                }
+            }
+        }
+        tracing::warn!(id = %notice.id, %reason, "notice failed; mailbox will retry after cooldown");
+        if let Sink::Codex(inner) = self {
+            let mut record = meta_map("Interlink", &notice.id, None, None, None);
+            record.insert("content".into(), json!(text));
+            let text = render_inbox_line(&Value::Object(record).to_string());
+            if let Err(e) = inner
+                .failed_deliveries()
+                .and_then(|s| s.retain_notice(&notice.id, &text, &reason))
+            {
+                // The mailbox already owns the bodies. Diagnostic storage must
+                // not block notification reconciliation when full or unavailable.
+                tracing::warn!("saving notice failure: {e}");
+            }
+        }
+        false
+    }
+
     pub(super) async fn deliver(
         &self,
         content: &str,
@@ -30,7 +77,7 @@ impl Sink {
         task_id: Option<&str>,
         status: Option<&str>,
         in_reply_to: Option<&str>,
-    ) {
+    ) -> bool {
         let mut attempts = 0;
         let mut retained_error = None;
         loop {
@@ -50,7 +97,7 @@ impl Sink {
                             .log_set_state(msg_id.into(), "delivery_failed".into())
                             .await;
                         tracing::warn!(%msg_id, "saved failed delivery; use failed_deliveries to recover");
-                        return;
+                        return false;
                     }
                     Err(e) => {
                         tracing::warn!(%msg_id, "cannot save failed delivery, retaining on bus: {e}")
@@ -62,7 +109,7 @@ impl Sink {
                     .try_deliver(content, sender, msg_id, task_id, status, in_reply_to)
                     .await
                 {
-                    Ok(()) => return,
+                    Ok(()) => return true,
                     Err(e) => {
                         if attempts == 1 {
                             tracing::warn!(%msg_id, "local delivery failed: {e}");
@@ -196,7 +243,7 @@ pub(super) fn render_inbox_line(line: &str) -> String {
         }
     }
     format!(
-        "[interlink peer message from {sender}] act on this:\n<interlink sender=\"{sender}\"{attrs}>\n{}\n</interlink>",
+        "[interlink message from {sender}]:\n<interlink sender=\"{sender}\"{attrs}>\n{}\n</interlink>",
         defang_wrapper(get("content").unwrap_or(""))
     )
 }

@@ -23,15 +23,17 @@ forwards arguments and connects the native process to stdin and stdout.
 This registers an MCP server only. For Claude's default incoming-message wake,
 install the [Claude plugin](../plugin/README.md), which also installs the Stop
 listener. For Codex, follow the [Codex adapter guide](../codex/README.md). Codex
-support and the persistence fixes require Interlink 0.9.0 or newer.
+support starts at Interlink 0.9.0; use 0.10.0 or newer for shared inbox
+consumption and lost-notification recovery.
 
 Node 18 or newer is required. `postinstall` fetches the release asset for Linux
 x64/arm64, macOS arm64, or Windows x64. Other platforms need a source build.
 The npm package supplies only `interlink-mcp`; the full release archive or
 `cargo install` also supplies `interlink-bus`, `interlink-keygen`, and `interlinked`.
 
-`INTERLINK_AGENT_DB` is obsolete and ignored. The ordinary MCP outbox/log are
-in memory; separate files handle pairing, inbox, and failed-delivery recovery.
+`INTERLINK_AGENT_DB` is obsolete and ignored. The ordinary MCP outbox and outbound log are
+in memory; separate files persist the shared inbound mailbox and consumption,
+pairing, Claude notification inbox, and failed-delivery recovery.
 
 ## Releasing
 

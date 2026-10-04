@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.10.0] - 2026-10-03
+
+### Added
+- Expiring notification reservations with capped retry backoff, recovery without
+  notice IDs, and bounded diagnostics for repeated host-notification failures.
+- Shared persistent inbound mailbox, read-only `receive_messages`, and explicit
+  `acknowledge_messages` consumption for Claude
+  Stop hooks, Claude channels, and Codex queues.
+- Explicit `conversation_history(consume=true)` acknowledgement, scoped to the
+  messages returned, with restart-safe deduplication and read-only inspection.
+
+### Changed
+- Host queues carry a coalesced inbox notice instead of each peer message body.
+  Stale notices fetch no consumed bodies. Task progress stays quiet; newer progress
+  and terminal results supersede old updates without suppressing questions or failures.
+- Delivery states distinguish relay acceptance, local storage, host handoff, and
+  receiver tool acknowledgement. Sender-side receiver status remains unknown.
+- Inbound mailbox state is bounded at 4,096 records / 32 MiB per identity/session.
+  Unread messages are preserved; eligible consumed history expires on new arrivals
+  after the signature acceptance window. Existing legacy inbox entries still work.
+
 ## [0.9.0] - 2026-10-03
 
 ### Added

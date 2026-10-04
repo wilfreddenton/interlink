@@ -1,0 +1,17 @@
+[package]
+name = "interlink-rustqueue-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+rustqueue = { version = "=0.3.0", default-features = false }
+serde_json = "1"
+
+[dev-dependencies]
+chrono = "0.4"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

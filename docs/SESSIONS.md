@@ -65,12 +65,12 @@ See [pairing](DISCOVERY.md).
 
 ## State and recovery
 
-The ordinary outbox, message log, replay set, and sticky routes are in memory.
+The ordinary outbox, outbound log, gate replay set, and sticky routes are in memory.
 They survive suspension with the process, but are lost when it restarts.
 `INTERLINK_AGENT_DB` / `--db` on the agent are accepted but ignored.
 
-Separate files persist peer policy, pairing state, the Claude inbox and cursor,
-and Codex failed deliveries. These survive reopening the same session with the
+Separate files persist peer policy, pairing state, the shared inbound mailbox
+and consumption, the Claude notification inbox and cursor, and Codex failed notices. These survive reopening the same session with the
 same state directory. The broker queue survives a broker restart only with
 `--db`; its roster never persists and is rebuilt by announcements.
 

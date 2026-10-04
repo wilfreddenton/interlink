@@ -54,6 +54,9 @@ pub mod pairing;
 pub mod inbox;
 
 #[cfg(feature = "agent")]
+pub mod mailbox;
+
+#[cfg(feature = "agent")]
 pub mod state;
 
 pub mod route;
