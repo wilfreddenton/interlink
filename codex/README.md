@@ -12,10 +12,10 @@ adapter uses `codex queue`; `--no-daemon`, remote app servers, and the desktop a
 are not supported by this adapter. Ephemeral (`codex exec --ephemeral`) threads
 cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.10.1 or newer:
+Install Interlink 0.10.2 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.10.1 --locked
+cargo install interlink-mcp --version 0.10.2 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`
@@ -32,6 +32,9 @@ your configured `CODEX_HOME`), keeping any existing MCP servers and hooks. If `i
 path for `command`. Set `INTERLINK_CODEX_BIN` in the server's `env` table if the
 Codex executable is not on that PATH. The queue subprocess must share the host's
 Codex home and local daemon; do not point it at a different installation or configuration home.
+If you use a custom `CODEX_HOME`, also set it explicitly in
+`mcp_servers.interlink.env`; the MCP environment may not inherit it from the host.
+The title reader needs that same home to find the owning conversation.
 
 Restart Codex, review and trust the binding hooks in `/hooks`, and send one
 prompt. No hook-trust or sandbox bypass flags are needed. `SessionStart` can run
@@ -39,6 +42,10 @@ before MCP is ready, so prompt, Interlink tool, and completed-turn hooks provide
 fallbacks.
 The session becomes discoverable after its binding hook succeeds. If binding
 has not run, sending returns a setup error instead of using a random thread.
+
+Version 0.10.2 and newer synchronize native titles, including `/rename`,
+through metadata-only reads without starting a turn. No additional binding hooks
+are needed. See [title precedence and recovery](../docs/SESSIONS.md#titles).
 
 Ask Codex to set a summary (for example, "Codex: working on the API") and run
 `discover`. From a paired Claude or Codex session, send it a message using the
@@ -117,12 +124,14 @@ local response fixtures. It requires Python 3.11+, both CLIs on PATH, and
 localhost socket access; diagnostics go to `target/host-validation/`. On Codex
 0.160.0, all four sample hooks were first listed as untrusted, then reviewed and
 trusted by supplying their exact current hashes
-as invocation-local config. Lifecycle hooks bound two ephemeral threads to
-separate Interlink sessions. Those ephemeral threads are not used for real queued
+as invocation-local config. The fixture waits for MCP readiness before submitting
+its prompt; it does not validate the first-prompt startup race. Lifecycle hooks bound a saved thread and an ephemeral thread to
+separate Interlink sessions. These fixture threads are not used for real queued
 delivery. The fixture also checks that both inbox tools
 are exposed through the owning thread's MCP connection, sends a sibling message,
 and calls fetch and acknowledgement through Codex. Queue delivery is stubbed for
-these ephemeral threads. This verifies the tool connection and consumption, not
+these fixture threads. The saved thread also verifies native renaming without
+a model turn, override precedence, and restoring automatic naming. This verifies the tool connection and consumption, not
 whether a production model follows the notice instructions.
 Normal user configuration and saved hook trust
 were unchanged. This validates trusted hook execution; it does not automate the

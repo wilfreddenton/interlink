@@ -25,7 +25,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
 use interlink::agent::{Dedupe, Dispatch, decide};
-use interlink::codex::{deliver as deliver_codex, validate_thread_id};
+use interlink::codex::{TitleReader, deliver as deliver_codex, validate_thread_id};
 use interlink::delivery::FailedDeliveries;
 use interlink::identity::{
     AgentId, AgentKey, Announcement, MessageKind, SessionInfo, SignedMessage, TaskStatus,
@@ -38,6 +38,7 @@ use interlink::policy::{PeerConflict, Policy};
 use interlink::policy_store::PolicyStore;
 use interlink::route::Route;
 use interlink::store::{Dir, LogRecord, Store};
+use interlink::titles::{TitleStore, fallback_title, normalize_title};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
@@ -48,6 +49,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, watch};
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 
 #[path = "mcp/delivery.rs"]
 mod delivery;
@@ -82,6 +84,15 @@ enum Command {
     /// Run by the async Stop hook, which fires again each turn — so a plain-`claude`
     /// session is still woken by incoming messages, with no arming by the model.
     Wait(WaitArgs),
+    /// Record Claude's native title from a local SessionStart/UserPromptSubmit hook.
+    SyncTitle(SyncTitleArgs),
+}
+
+#[derive(clap::Args)]
+struct SyncTitleArgs {
+    /// Match an explicit session ID configured for the MCP server.
+    #[arg(long)]
+    session: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -133,7 +144,7 @@ struct Args {
     /// key's fingerprint). A self-claim — peers verify the key, not the name.
     #[arg(long, env = "INTERLINK_NAME")]
     name: Option<String>,
-    /// Optional session title for discovery. Does not change the session's address.
+    /// Initial title override, unless this session has a saved override choice.
     #[arg(long, env = "INTERLINK_TITLE", default_value = "", value_parser = normalize_title)]
     title: String,
     /// This session's id (server mode). Defaults to Claude's injected
@@ -155,6 +166,8 @@ struct OutboundJob {
 /// Shared between the MCP handler (outbound) and the long-poll loop (inbound).
 struct Inner {
     codex: Option<CodexClient>,
+    startup_title: String,
+    title_update: Mutex<()>,
     recovery: Mutex<()>,
     key: AgentKey,
     policy: PolicyStore,
@@ -182,6 +195,51 @@ struct CodexClient {
 }
 
 impl Inner {
+    fn host_name(&self) -> &'static str {
+        if self.codex.is_some() {
+            "Codex"
+        } else {
+            "Claude"
+        }
+    }
+
+    fn title_store(&self) -> Result<TitleStore> {
+        self.title_store_for(&self.session.read().unwrap().session_id)
+    }
+
+    fn title_store_for(&self, session_id: &str) -> Result<TitleStore> {
+        TitleStore::new(
+            &progress_dir().context("no state directory for session titles")?,
+            self.host_name(),
+            session_id,
+        )
+    }
+
+    fn restore_title(&self) -> Result<bool> {
+        let mut session = self.session.write().unwrap();
+        self.restore_session_title(&mut session)
+    }
+
+    fn restore_session_title(&self, session: &mut SessionInfo) -> Result<bool> {
+        let project = if session.git_root.is_empty() {
+            Path::new(&session.cwd)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Session")
+        } else {
+            &session.git_root
+        };
+        let fallback = fallback_title(project, &self.name, self.host_name(), &session.session_id);
+        if session.title.is_empty() {
+            session.title = fallback.clone();
+        }
+        let state = self.title_store_for(&session.session_id)?.read()?;
+        let title = state.resolve(&self.startup_title, &fallback);
+        let changed = session.title != title;
+        session.title = title;
+        Ok(changed)
+    }
+
     fn mailbox(&self) -> Result<Mailbox> {
         let sid = self.session.read().unwrap().session_id.clone();
         let path = progress_dir()
@@ -232,6 +290,10 @@ impl Inner {
             return Ok(());
         }
         session.session_id = thread_id.to_string();
+        // Restore before waking workers so the first announcement has a usable name.
+        if let Err(error) = self.restore_session_title(&mut session) {
+            tracing::warn!(%error, "could not restore session title");
+        }
         codex.ready.send_replace(true);
         Ok(())
     }
@@ -400,7 +462,7 @@ struct SetSummaryArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SetSessionTitleArgs {
     /// Display title, at most 256 UTF-8 bytes with no control characters.
-    /// Empty clears the title. Does not rename the host conversation.
+    /// Empty clears the override and resumes automatic naming. Does not rename the host.
     title: String,
 }
 
@@ -1061,8 +1123,8 @@ impl Agent {
     #[tool(
         description = "Set an optional display title for this Interlink session, shared by Claude and Codex. \
                        Does not change its session ID, summary, routing, or host conversation title. \
-                       Empty clears it. The title lasts for this MCP process; use INTERLINK_TITLE or \
-                       --title to supply it again on startup."
+                       The override persists across restarts. Empty clears the override and follows \
+                       the host conversation title, or a project/machine/session fallback."
     )]
     async fn set_session_title(
         &self,
@@ -1071,15 +1133,18 @@ impl Agent {
         self.inner.ensure_ready()?;
         let title = normalize_title(&args.title)
             .map_err(|error| McpError::invalid_params(error.to_string(), None))?;
-        let session_id = {
-            let mut session = self.inner.session.write().unwrap();
-            session.title = title.clone();
-            session.session_id.clone()
-        };
+        let _update = self.inner.title_update.lock().await;
+        self.inner
+            .title_store()
+            .and_then(|store| store.set_explicit(&title))
+            .map_err(state_error)?;
+        self.inner.restore_title().map_err(state_error)?;
+        let session = self.inner.session.read().unwrap().clone();
         announce_now(&self.inner).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-            "session {session_id} title: {}",
-            json!(title)
+            "session {} title: {}",
+            session.session_id,
+            json!(session.title)
         ))]))
     }
 
@@ -1665,7 +1730,7 @@ impl ServerHandler for Agent {
             Finish with status='result'/'failed'. Answer a question with in_reply_to=<its msg_id>. \
             cancel_task requests cancellation. Never infer completion from delivery status.\n\n\
             Sessions: discover lists identity, optional title, session_id, cwd, and summary. \
-            set_session_title adds a display title; set_summary describes current work. \
+            set_session_title pins a title override (empty resumes automatic naming); set_summary describes current work. \
             send_message auto-routes to a lone live session; otherwise choose session=<id>. Replies stick to \
             the sender's session. Reach your own sibling via to='self', session=<id>. For another machine, \
             request_pair knocks; accept_pair/reject_pair handles knocks only when your operator requests it.";
@@ -2122,14 +2187,6 @@ fn detect_git_root(cwd: &str) -> String {
     }
 }
 
-fn normalize_title(title: &str) -> Result<String> {
-    let title = title.trim();
-    if title.len() > 256 || title.chars().any(char::is_control) {
-        bail!("title must be at most 256 UTF-8 bytes and contain no control characters");
-    }
-    Ok(title.to_string())
-}
-
 /// One human-readable line for a live session in `discover` / pick-lists, e.g.
 /// `a3f2c1 · ~/eden · git:eden · "installing deps"`.
 fn session_line(s: &SessionInfo) -> String {
@@ -2277,6 +2334,77 @@ async fn announce_loop(inner: Arc<Inner>) {
     }
 }
 
+async fn title_loop(inner: Arc<Inner>) {
+    inner.wait_ready().await;
+    let mut reader = None;
+    let mut retry_at = Instant::now();
+    let mut failed = false;
+    loop {
+        let _update = inner.title_update.lock().await;
+        if let Some(codex) = &inner.codex
+            && Instant::now() >= retry_at
+        {
+            let sid = inner.session.read().unwrap().session_id.clone();
+            let result = tokio::time::timeout(Duration::from_secs(3), async {
+                if reader.is_none() {
+                    reader = Some(TitleReader::connect(&codex.executable).await?);
+                }
+                reader.as_mut().unwrap().read_title(&sid).await
+            })
+            .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(_) => Err(anyhow!("title lookup timed out")),
+            };
+            match result.and_then(|title| inner.title_store()?.set_native(title.as_deref())) {
+                Ok(_) => {
+                    failed = false;
+                }
+                Err(error) => {
+                    reader = None;
+                    retry_at = Instant::now() + Duration::from_secs(30);
+                    if !failed {
+                        tracing::warn!(%error, "native title unavailable; retaining saved title or fallback");
+                        failed = true;
+                    }
+                }
+            }
+        }
+        match inner.restore_title() {
+            Ok(true) => announce_now(&inner).await,
+            Ok(false) => {}
+            Err(error) => tracing::debug!(%error, "could not refresh saved title"),
+        }
+        drop(_update);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+fn sync_claude_title(configured_session: Option<&str>) -> Result<()> {
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 1024 * 1024 {
+        bail!("title hook payload too large");
+    }
+    let input: Value = serde_json::from_slice(&bytes)?;
+    let session = resolve_session_id(configured_session, input["session_id"].as_str())
+        .context("missing hook session_id or configured session override")?;
+    let title = match input.get("session_title") {
+        Some(Value::String(title)) => Some(title.as_str()),
+        None | Some(Value::Null) => None,
+        _ => bail!("invalid hook session_title"),
+    };
+    TitleStore::new(
+        &progress_dir().context("no state directory for titles")?,
+        "Claude",
+        &session,
+    )?
+    .set_native(title)?;
+    Ok(())
+}
+
 async fn fetch_roster(http: &reqwest::Client, url: &str) -> Result<Vec<Value>> {
     let resp = http
         .get(format!("{url}/roster"))
@@ -2335,6 +2463,15 @@ fn claude_session_id() -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+fn resolve_session_id(configured: Option<&str>, native: Option<&str>) -> Option<String> {
+    [configured, native]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 async fn run_wait(w: &WaitArgs) -> Result<()> {
@@ -2411,8 +2548,12 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    if let Some(Command::Wait(w)) = &cli.command {
-        return run_wait(w).await;
+    match &cli.command {
+        Some(Command::Wait(w)) => return run_wait(w).await,
+        Some(Command::SyncTitle(hook)) => {
+            return sync_claude_title(hook.session.as_deref().or(cli.args.session.as_deref()));
+        }
+        None => {}
     }
     let args = cli.args;
     let key_path = args
@@ -2455,21 +2596,14 @@ async fn main() -> Result<()> {
     // changes) shares one stable id, so a peer's reply always finds the same inbox and
     // the `wait` hook — which reads the same id from its stdin payload — names the same
     // `inbox/<id>.jsonl`. No provisional id, no rendezvous handshake.
-    let session_id = match args
-        .session
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(s) => s.to_string(),
-        None => match claude_session_id() {
+    let session_id =
+        match resolve_session_id(args.session.as_deref(), claude_session_id().as_deref()) {
             Some(s) => s,
             None => mint_session_id()?,
-        },
-    };
+        };
     let session = SessionInfo {
         session_id,
-        title: args.title,
+        title: args.title.clone(),
         git_root: detect_git_root(&cwd),
         cwd,
         summary: String::new(),
@@ -2501,6 +2635,8 @@ async fn main() -> Result<()> {
         .context("building HTTP client")?;
 
     let inner = Arc::new(Inner {
+        startup_title: args.title,
+        title_update: Mutex::new(()),
         recovery: Mutex::new(()),
         codex: (args.host == Host::Codex).then(|| CodexClient {
             executable: args.codex_bin,
@@ -2518,6 +2654,12 @@ async fn main() -> Result<()> {
         sticky: RwLock::new(HashMap::new()),
     });
 
+    if inner.codex.is_none()
+        && let Err(error) = inner.restore_title()
+    {
+        tracing::warn!(%error, "could not restore session title");
+    }
+
     let agent = Agent {
         inner: inner.clone(),
         tool_router: Agent::tool_router(),
@@ -2530,6 +2672,7 @@ async fn main() -> Result<()> {
     workers.spawn(pairing_loop(inner.clone()));
     // Heartbeat this node's presence to the roster for discovery.
     workers.spawn(announce_loop(inner.clone()));
+    workers.spawn(title_loop(inner.clone()));
 
     // Delivery: a native channel push when the operator opted in, else the local
     // inbox queue drained by `wait`, preserved across server restarts.

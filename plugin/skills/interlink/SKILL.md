@@ -35,8 +35,10 @@ tasks use different sessions of one peer.
 
 `send_message(to: "self", session: "<id>", text: "...")` reaches another session
 using the same key without pairing. It cannot address this session itself.
-Use `set_session_title(title: "Interlink development")` for an optional readable
-label and `set_summary(summary: "what you're working on")` for current work.
+Titles follow the host title when available, with a readable fallback.
+Use `set_session_title(title: "Interlink development")` only to pin a persistent
+Interlink override; an empty title restores automatic naming.
+Use `set_summary(summary: "what you're working on")` for current work.
 Titles do not replace session IDs when addressing messages.
 
 Incoming messages appear as channel events or attributed `<interlink>` blocks.

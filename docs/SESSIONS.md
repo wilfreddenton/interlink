@@ -29,22 +29,49 @@ announces it.
 
 ## Titles
 
-`set_session_title(title="Interlink development")` adds a display label to the
-current session in either Claude Code or Codex CLI. It leaves the ID, summary,
-and routing unchanged. Duplicate titles are allowed; use session IDs to address
-messages. An empty title clears the label. Titles are trimmed and limited to
-256 UTF-8 bytes, with no control characters.
+Version 0.10.2 and newer automatically choose a readable display title.
+Version 0.10.1 supports only explicitly supplied titles.
 
-The title is announced immediately and on subsequent heartbeats, and appears in
-discovery and session selection lists. Like summaries, titles set through the
-tool live for the MCP process. Set `INTERLINK_TITLE` in that session's MCP
-environment or pass `interlink-mcp --title "Interlink development"` to supply a
-title on startup. A shared MCP configuration gives every session the same initial
-title; individual sessions can change theirs with the tool. Codex still waits
-for its local binding hook before announcing.
+The precedence is:
 
-Interlink titles do not rename or automatically track the host conversation's
-native title. Native-title synchronization is not implemented yet.
+1. A saved `set_session_title` override, or `--title` / `INTERLINK_TITLE` when no
+   saved override decision exists.
+2. The native host conversation title.
+3. Project (or working-directory name), node name, host, and the last eight
+   session-ID characters, such as `Motif · mac · Codex · 56789abc`.
+
+`set_session_title(title="Interlink development")` pins an Interlink-only title.
+`set_session_title(title="")` clears that override, including a startup default,
+and restores automatic naming. This choice and the last known native title
+persist across MCP restarts, keyed by host and full session ID. A new session
+gets its own state. Temporary lookup errors preserve the last known title;
+a successful lookup reporting no native title restores the fallback.
+
+Codex uses a separate, reusable `codex app-server --stdio` metadata connection,
+reading only the owning thread with `thread/read` and `includeTurns=false`.
+It never starts, resumes, or subscribes to a thread. Renames are checked every
+five seconds without a model turn. Requests time out after three seconds;
+lookup failures retry after thirty seconds. This reader uses the same Codex
+executable and `CODEX_HOME` as the queue adapter. An unavailable or older metadata
+API leaves the saved title or fallback usable and does not block registration.
+
+Claude's plugin runs `interlink-mcp sync-title` on `SessionStart` and
+`UserPromptSubmit`. These local hooks copy the custom `session_title` supplied by
+Claude into the shared title state. `/rename` is reflected after the next prompt,
+then within the five-second refresh interval. Claude-generated titles are not
+included in that hook field, so unnamed Claude conversations use the fallback.
+The hook and MCP server must share their Interlink state directory and effective
+session ID. If you pin `INTERLINK_SESSION`, set the same value for both processes.
+If the MCP uses `--session`, also pass it to the hook, for example
+`interlink-mcp sync-title --session pinned-id`. The override takes precedence over
+Claude's native hook ID.
+
+Titles appear in discovery and selection lists without changing IDs, summaries,
+or routing. Duplicate titles are allowed: resolve the human description against
+the roster, then address the full session ID; ask when multiple sessions match.
+Explicit titles are trimmed, limited to 256 UTF-8 bytes, and reject control
+characters. Native names are bounded and cleaned for display. Interlink never
+renames the host conversation.
 
 ## Selecting a session
 
@@ -90,7 +117,7 @@ The ordinary outbox, outbound log, gate replay set, and sticky routes are in mem
 They survive suspension with the process, but are lost when it restarts.
 `INTERLINK_AGENT_DB` / `--db` on the agent are accepted but ignored.
 
-Separate files persist peer policy, pairing state, the shared inbound mailbox
+Separate files persist session title metadata, peer policy, pairing state, the shared inbound mailbox
 and consumption, the Claude notification inbox and cursor, and Codex failed notices. These survive reopening the same session with the
 same state directory. The broker queue survives a broker restart only with
 `--db`; its roster never persists and is rebuilt by announcements.

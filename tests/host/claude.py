@@ -1,4 +1,4 @@
-import json, os, queue, subprocess, threading, time, uuid
+import base64, json, os, queue, subprocess, threading, time, uuid
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,11 +33,13 @@ provider = ThreadingHTTPServer(('127.0.0.1', 0), Provider)
 threading.Thread(target=provider.serve_forever, daemon=True).start()
 sid = str(uuid.uuid4())
 settings = {'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': str(ROOT / 'target/debug/interlink-mcp') + ' wait --renew-after-secs 3', 'async': True, 'asyncRewake': True, 'timeout': 30}]}]}}
+for event in ['SessionStart', 'UserPromptSubmit']:
+    settings['hooks'][event] = [{'hooks': [{'type': 'command', 'command': str(ROOT / 'target/debug/interlink-mcp') + ' sync-title'}]}]
 (WORK / 'settings.json').write_text(json.dumps(settings))
 env = os.environ.copy()
 env.update({'CLAUDE_CONFIG_DIR': str(WORK / 'config'), 'ANTHROPIC_BASE_URL': f'http://127.0.0.1:{provider.server_port}', 'ANTHROPIC_API_KEY': 'interlink-local-fixture', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'XDG_STATE_HOME': str(WORK / 'state'), 'INTERLINK_CHANNELS': '0'})
 env.pop('CLAUDECODE', None)
-args = ['claude', '--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--session-id', sid, '--setting-sources', '', '--settings', str(WORK / 'settings.json'), '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--tools', '', '--model', 'claude-sonnet-4-6']
+args = ['claude', '--name', 'Claude native title fixture', '--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--session-id', sid, '--setting-sources', '', '--settings', str(WORK / 'settings.json'), '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--tools', '', '--model', 'claude-sonnet-4-6']
 log = open(WORK / 'stderr.log', 'w')
 p = subprocess.Popen(args, cwd=WORK, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True)
 q = queue.Queue()
@@ -72,6 +74,9 @@ try:
             print('renewal reached host; injected follow-up message', flush=True)
         if injected and any(('Message after listener renewal' in json.dumps(r) for r in REQUESTS)):
             print('PASS: real Claude host renewed listener and received a later peer message', flush=True)
+            title_path = WORK / 'state/interlink/titles/Claude' / (base64.urlsafe_b64encode(sid.encode()).decode().rstrip('=') + '.json')
+            assert json.loads(title_path.read_text())['native'] == 'Claude native title fixture'
+            print('PASS: real Claude hook supplied the native session title', flush=True)
             break
         if p.poll() is not None:
             raise RuntimeError('Claude exited ' + str(p.returncode))

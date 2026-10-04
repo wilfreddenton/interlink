@@ -1,4 +1,4 @@
-import json, os, queue, socket, subprocess, threading, time, tomllib, urllib.request
+import json, os, queue, shutil, socket, subprocess, threading, time, tomllib, urllib.request
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = Path(__file__).resolve().parents[2]
@@ -93,8 +93,11 @@ if not key.exists():
 (WORK / 'peers.json').write_text('{}')
 buslog = open(WORK / 'bus.stderr', 'w')
 bus = subprocess.Popen([str(ROOT / 'target/debug/interlink-bus'), '--addr', f'127.0.0.1:{port}'], stdout=subprocess.DEVNULL, stderr=buslog)
+cli = WORK / 'codex-title-cli'
+cli.write_text('#!/usr/bin/env python3\nimport os, sys\nif sys.argv[1:2] == ["queue"]: sys.exit(0)\nos.execv(' + repr(shutil.which('codex')) + ', ["codex"] + sys.argv[1:])\n')
+cli.chmod(0o700)
 base = tomllib.loads((ROOT / 'codex/config.toml').read_text())
-base['mcp_servers']['interlink'] = {'enabled': True, 'command': str(ROOT / 'target/debug/interlink-mcp'), 'args': ['--host', 'codex', '--key', str(key), '--peers', str(WORK / 'peers.json'), '--url', url], 'env': {'XDG_STATE_HOME': str(WORK / 'state'), 'INTERLINK_CODEX_BIN': '/bin/true'}}
+base['mcp_servers']['interlink'] = {'enabled': True, 'command': str(ROOT / 'target/debug/interlink-mcp'), 'args': ['--host', 'codex', '--key', str(key), '--peers', str(WORK / 'peers.json'), '--url', url], 'env': {'XDG_STATE_HOME': str(WORK / 'state'), 'CODEX_HOME': str(WORK / 'config'), 'INTERLINK_CODEX_BIN': str(cli)}}
 for event in ['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PreCompact', 'PostCompact', 'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'SubagentStart', 'SubagentStop', 'Stop', 'Interrupt']:
     base['hooks'].setdefault(event, [])
 base.update({'features.plugins': False, 'features.apps': False, 'features.hooks': True, 'model_provider': 'fixture', 'model': 'fixture', 'model_providers.fixture': {'name': 'Local validation fixture', 'base_url': f'http://127.0.0.1:{provider.server_port}/v1', 'wire_api': 'responses', 'requires_openai_auth': False}, 'model_reasoning_effort': 'low'})
@@ -116,10 +119,12 @@ try:
     assert all((h['trustStatus'] == 'trusted' for h in hooks)), hooks
     print('reviewed hooks: all trusted', flush=True)
     ids = []
-    for _ in range(2):
-        response = server.call('thread/start', {'cwd': str(WORK), 'ephemeral': True, 'approvalPolicy': 'never', 'sandbox': 'read-only', 'config': base})
+    for index in range(2):
+        response = server.call('thread/start', {'cwd': str(WORK), 'ephemeral': index == 1, 'approvalPolicy': 'never', 'sandbox': 'read-only', 'config': base})
         tid = response['thread']['id']
         ids.append(tid)
+        # Isolate title behavior from the separate first-prompt MCP startup race.
+        server.call('mcpServerStatus/list', {'threadId': tid, 'serverName': 'interlink'})
         server.call('turn/start', {'threadId': tid, 'input': [{'type': 'text', 'text': 'Reply OK.'}]})
         end = time.monotonic() + 20
         while time.monotonic() < end:
@@ -147,7 +152,7 @@ try:
         assert not result.get('isError'), result
         return '\n'.join(c['text'] for c in result['content'] if c['type'] == 'text')
 
-    # These ephemeral threads cannot receive real codex queue calls. Exercise the
+    # The fixture threads cannot receive real codex queue calls. Exercise the
     # connected host's fetch/ack tools directly, with queue delivery stubbed above.
     tool(ids[0], 'send_message', {'to': 'self', 'session': ids[1], 'text': 'host fetch acknowledgement check'})
     end = time.monotonic() + 15
@@ -164,8 +169,34 @@ try:
     assert 'Acknowledged 1 ' in acknowledged, acknowledged
     assert tool(ids[1], 'receive_messages', {}).startswith('No unread messages')
     print('PASS: installed Codex exposes and executes fetch/ack tools on the owning thread', flush=True)
+
+    def wait_title(title):
+        end = time.monotonic() + 40
+        while time.monotonic() < end:
+            roster = json.load(urllib.request.urlopen(url + '/roster', timeout=2))['roster']
+            session = next(a['session'] for a in roster if a['session']['session_id'] == ids[0])
+            if session.get('title') == title:
+                return
+            time.sleep(0.1)
+        raise AssertionError(('native title was not synchronized', title, session))
+
+    server.call('thread/name/set', {'threadId': ids[0], 'name': 'Native title fixture'})
+    wait_title('Native title fixture')
+    server.call('thread/name/set', {'threadId': ids[0], 'name': 'Renamed without a turn'})
+    wait_title('Renamed without a turn')
+    tool(ids[0], 'set_session_title', {'title': 'Pinned title'})
+    server.call('thread/name/set', {'threadId': ids[0], 'name': 'Latest native title'})
+    time.sleep(6)
+    wait_title('Pinned title')
+    tool(ids[0], 'set_session_title', {'title': ''})
+    wait_title('Latest native title')
+    print('PASS: real Codex native renames synchronize without turns and respect overrides', flush=True)
+
 finally:
     if server:
+        while not server.q.empty():
+            server.events.append(server.q.get_nowait())
+        (WORK / 'events.json').write_text(json.dumps(server.events))
         server.close()
     bus.terminate()
     bus.wait(timeout=5)
