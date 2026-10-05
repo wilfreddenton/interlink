@@ -1,6 +1,6 @@
 {
   "name": "interlink-mcp",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "Authenticated, cross-machine agent chat for Claude Code and Codex CLI, over MCP. Rust binary delivered via npm.",
   "keywords": ["claude-code", "codex", "mcp", "agents", "ai", "rust", "ed25519"],
   "homepage": "https://github.com/wilfreddenton/interlink",

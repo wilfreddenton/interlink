@@ -12,10 +12,10 @@ adapter uses `codex queue`; `--no-daemon`, remote app servers, and the desktop a
 are not supported by this adapter. Ephemeral (`codex exec --ephemeral`) threads
 cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.10.2 or newer:
+Install Interlink 0.11.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.10.2 --locked
+cargo install interlink-mcp --version 0.11.0 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`
@@ -34,7 +34,6 @@ Codex executable is not on that PATH. The queue subprocess must share the host's
 Codex home and local daemon; do not point it at a different installation or configuration home.
 If you use a custom `CODEX_HOME`, also set it explicitly in
 `mcp_servers.interlink.env`; the MCP environment may not inherit it from the host.
-The title reader needs that same home to find the owning conversation.
 
 Restart Codex, review and trust the binding hooks in `/hooks`, and send one
 prompt. No hook-trust or sandbox bypass flags are needed. `SessionStart` can run
@@ -43,9 +42,29 @@ fallbacks.
 The session becomes discoverable after its binding hook succeeds. If binding
 has not run, sending returns a setup error instead of using a random thread.
 
-Version 0.10.2 and newer synchronize native titles, including `/rename`,
-through metadata-only reads without starting a turn. No additional binding hooks
-are needed. See [title precedence and recovery](../docs/SESSIONS.md#titles).
+### Known limitation: registration before the first turn
+
+Requiring one initial user turn is accepted for now. Registration before that
+turn remains a desired improvement. In an isolated Codex 0.160.0 app-server
+probe, MCP was ready but both command and MCP `SessionStart` hooks waited until
+the first prompt. The MCP initialize request supplied no thread ID. Explicitly
+calling the binding tool through the owning app server registered the session
+before a turn, so the missing piece is the startup identity handoff.
+
+Track [openai/codex#19937](https://github.com/openai/codex/issues/19937), which
+requests native thread identity at stdio MCP startup. It was closed without an
+implementation; revisit host support rather than treating it as fixed. Longer
+timeouts or switching to a command hook do not resolve the observed deferral.
+Keep binding through trusted hooks until a reliable startup contract is available.
+Any future fix should verify registration before a prompt, concurrent sessions
+in the same directory, resume, and MCP restart without guessing the owning thread.
+
+### Identifying sessions
+
+Use the machine identity, session ID, project, and summary shown by `discover`.
+Use `get_my_session_id()` for your own ID without a broker lookup, after binding.
+Version 0.11.0 removes session titles and their metadata reader.
+See [upgrade notes](../docs/SESSIONS.md#upgrading-from-session-titles).
 
 Ask Codex to set a summary (for example, "Codex: working on the API") and run
 `discover`. From a paired Claude or Codex session, send it a message using the
@@ -130,8 +149,8 @@ separate Interlink sessions. These fixture threads are not used for real queued
 delivery. The fixture also checks that both inbox tools
 are exposed through the owning thread's MCP connection, sends a sibling message,
 and calls fetch and acknowledgement through Codex. Queue delivery is stubbed for
-these fixture threads. The saved thread also verifies native renaming without
-a model turn, override precedence, and restoring automatic naming. This verifies the tool connection and consumption, not
+these fixture threads. The fixture verifies registration without title fields or tools,
+and that no metadata subprocess is started. This verifies the tool connection and consumption, not
 whether a production model follows the notice instructions.
 Normal user configuration and saved hook trust
 were unchanged. This validates trusted hook execution; it does not automate the

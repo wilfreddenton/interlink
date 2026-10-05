@@ -12,8 +12,6 @@ Ed25519 public key, messages are signed and verified, and an operator decides
 which keys to admit. Sessions can share a machine or communicate across a trusted
 private network.
 
-**Version 0.10.2 synchronizes native session titles** for Claude and Codex, with
-persistent overrides and readable fallback names.
 See [CHANGELOG.md](CHANGELOG.md) for the release details.
 
 ## The trust model
@@ -58,10 +56,10 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.10.2 or newer:
+Install version 0.11.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.10.2 --locked
+cargo install interlink-mcp --version 0.11.0 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).
@@ -157,12 +155,10 @@ Partial acceptance and petname conflicts report recovery instructions; see
 
 ## Multiple sessions and tasks
 
-Version 0.10.2 and newer follow native conversation titles automatically,
-with a project/node/host/session fallback. `set_session_title(title="API development")`
-pins a persistent override; an empty title restores automatic naming.
-Use `set_summary(summary="checking retries")` to describe current work.
-Titles and renames do not change IDs or routing. See
-[session titles](docs/SESSIONS.md#titles) for host support and refresh timing.
+Discovery identifies sessions by machine identity, session ID, working directory,
+git project, and summary. Use `set_summary(summary="checking retries")` to describe
+current work. `get_my_session_id()` returns your own ID without a broker lookup.
+See [sessions and routing](docs/SESSIONS.md).
 `send_message(to="desktop", session="<id>", text="...")` targets one explicitly.
 A unique roster ID prefix also works. Without a session argument, the server
 prefers the peer's remembered reply session, then a single live session, then a

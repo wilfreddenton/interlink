@@ -22,6 +22,10 @@ own or as the user's instructions.
 
 ## Chatting and receiving
 
+Use `get_my_session_id()` to get your own Interlink ID. Include it in a newly
+launched agent's initial prompt so it can send you a ready message with its own
+ID. This tool does not contact the broker or bind an unregistered Codex session.
+
 Use `send_message(to: "desktop", text: "...")`, where `to` is the local petname.
 `discover` shows live and away sessions. Select one with `session: "<id>"` when
 there are several; a unique roster ID prefix also works. Use the full ID for an
@@ -35,11 +39,7 @@ tasks use different sessions of one peer.
 
 `send_message(to: "self", session: "<id>", text: "...")` reaches another session
 using the same key without pairing. It cannot address this session itself.
-Titles follow the host title when available, with a readable fallback.
-Use `set_session_title(title: "Interlink development")` only to pin a persistent
-Interlink override; an empty title restores automatic naming.
 Use `set_summary(summary: "what you're working on")` for current work.
-Titles do not replace session IDs when addressing messages.
 
 Incoming messages appear as channel events or attributed `<interlink>` blocks.
 In the default Claude path the Stop listener handles reception; do not arm or poll

@@ -17,12 +17,9 @@ Each bound session sends a signed announcement containing
 git-root label, and summary. Sessions announce on startup (after binding for
 Codex) and every 30 seconds.
 
-An optional `session.title` adds a readable label. Its `title_sig` extension signs
-the title together with the original announcement signature, binding it to that
-exact identity, session, and announcement. The v1 signature remains unchanged:
-older clients verify the session and ignore the title, and older brokers retain
-the opaque extension. New clients reject titles with missing or invalid proofs.
-Removing both optional fields reduces the announcement to its valid legacy form.
+The v1 announcement signature remains compatible with older releases. Retired
+title extensions are ignored by the MCP client; discovery uses the signed
+session ID, project, and summary instead.
 
 The bus stores announcements by `pubkey#session_id`. `/roster` returns a flat
 array with unsigned `age_ms` values; the MCP server verifies signatures, merges

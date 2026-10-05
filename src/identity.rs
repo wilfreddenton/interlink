@@ -224,13 +224,6 @@ impl AgentKey {
             session: session.clone(),
             ts,
             sig: B64.encode(sig.to_bytes()),
-            title_sig: (!session.title.is_empty()).then(|| {
-                B64.encode(
-                    self.0
-                        .sign(&title_canonical(&sig, &session.title))
-                        .to_bytes(),
-                )
-            }),
             age_ms: None,
         }
     }
@@ -243,8 +236,6 @@ impl AgentKey {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionInfo {
     pub session_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub title: String,
     #[serde(default)]
     pub cwd: String,
     #[serde(default)]
@@ -369,7 +360,6 @@ fn canonical(
 /// two version independently — a message-format change need not reissue the
 /// announcement format, and vice versa.
 const ANNOUNCE_DOMAIN: &[u8] = b"interlink-announce-v1\0";
-const TITLE_DOMAIN: &[u8] = b"interlink-announce-title-v1\0";
 
 /// A signed presence announcement, published to the bus roster. The `name` is a
 /// self-claim; identity is the key, so a peer [`verify`](Announcement::verify)s
@@ -382,10 +372,6 @@ pub struct Announcement {
     pub session: SessionInfo,
     pub ts: u64,
     pub sig: String,
-    /// The extension binds the title to the original signature so older clients
-    /// can still verify the unchanged v1 announcement and ignore the title.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title_sig: Option<String>,
     /// Age since last refresh, stamped by the bus on `/roster` (never signed, so it's
     /// outside `announce_canonical` and ignored by [`verify`](Announcement::verify)).
     /// The client classifies a session live vs. away from it. Absent on a freshly-signed
@@ -411,30 +397,8 @@ impl Announcement {
                 &sig,
             )
             .map_err(|_| anyhow!("announcement does not verify for {}", id.fingerprint()))?;
-        match &self.title_sig {
-            Some(proof) => {
-                let bytes = B64
-                    .decode(proof)
-                    .context("title signature is not valid base64")?;
-                let proof = Signature::from_slice(&bytes).context("invalid title signature")?;
-                id.as_verifying_key()
-                    .verify_strict(&title_canonical(&sig, &self.session.title), &proof)
-                    .context("announcement title does not verify")?;
-            }
-            None if !self.session.title.is_empty() => bail!("unsigned announcement title"),
-            None => {}
-        }
         Ok(id)
     }
-}
-
-fn title_canonical(signature: &Signature, title: &str) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(TITLE_DOMAIN.len() + SIGNATURE_LENGTH + 4 + title.len());
-    bytes.extend_from_slice(TITLE_DOMAIN);
-    bytes.extend_from_slice(&signature.to_bytes());
-    bytes.extend_from_slice(&(title.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(title.as_bytes());
-    bytes
 }
 
 fn announce_canonical(pubkey: AgentId, name: &str, session: &SessionInfo, ts: u64) -> Vec<u8> {
@@ -625,7 +589,6 @@ mod tests {
             cwd: "/home/alice/eden".into(),
             git_root: "eden".into(),
             summary: "installing deps".into(),
-            title: String::new(),
         };
         let a = alice.announce("alice-laptop", &session, 1234);
         assert_eq!(a.verify().unwrap(), alice.id());
@@ -654,59 +617,27 @@ mod tests {
     }
 
     #[test]
-    fn titles_extend_announcements_without_changing_legacy_signatures() {
+    fn retired_announcement_extensions_are_ignored() {
         let alice = key();
-        let mut session = SessionInfo {
+        let session = SessionInfo {
             session_id: "session-a".into(),
             summary: "current work".into(),
             ..Default::default()
         };
-        let legacy = alice.announce("alice", &session, 1234);
-        let legacy_json = serde_json::to_value(&legacy).unwrap();
-        assert!(legacy_json.get("title_sig").is_none());
-        assert!(legacy_json["session"].get("title").is_none());
-        let decoded: Announcement = serde_json::from_value(legacy_json).unwrap();
+        let original = alice.announce("alice", &session, 1234);
+        let mut wire = serde_json::to_value(&original).unwrap();
+        // Releases 0.10.1 and 0.10.2 used a separate extension signature;
+        // dropping that extension must preserve verification of the v1 fields.
+        wire["session"]["title"] = "Old display name".into();
+        wire["title_sig"] = "ignored extension proof".into();
+        let mut decoded: Announcement = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded, original);
         assert_eq!(decoded.verify().unwrap(), alice.id());
-
-        session.title = "Interlink development".into();
-        let titled = alice.announce("alice", &session, 1234);
-        assert_eq!(titled.sig, legacy.sig, "old clients must still verify v1");
-        let decoded: Announcement =
-            serde_json::from_value(serde_json::to_value(&titled).unwrap()).unwrap();
-        assert_eq!(decoded.verify().unwrap(), alice.id());
-        assert_eq!(decoded.session.title, session.title);
-
-        let mut changed = titled.clone();
-        changed.session.title = "another title".into();
-        assert!(changed.verify().is_err());
-        changed.session.title.clear();
-        assert!(
-            changed.verify().is_err(),
-            "removing a signed title changes its proof"
-        );
-
-        let mut unsigned = titled.clone();
-        unsigned.title_sig = None;
-        assert!(unsigned.verify().is_err());
-        unsigned.session.title.clear();
-        assert!(
-            unsigned.verify().is_ok(),
-            "a stripped extension is a valid legacy announcement"
-        );
-
-        let mut later = alice.announce("alice", &session, 1235);
-        later.title_sig = titled.title_sig.clone();
-        assert!(
-            later.verify().is_err(),
-            "title proofs belong to one announcement"
-        );
-        session.session_id = "session-b".into();
-        let mut sibling = alice.announce("alice", &session, 1234);
-        sibling.title_sig = titled.title_sig;
-        assert!(
-            sibling.verify().is_err(),
-            "a sibling cannot reuse the title proof"
-        );
+        let serialized = serde_json::to_value(&decoded).unwrap();
+        assert!(serialized["session"].get("title").is_none());
+        assert!(serialized.get("title_sig").is_none());
+        decoded.session.summary = "changed".into();
+        assert!(decoded.verify().is_err());
     }
 
     #[test]

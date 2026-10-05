@@ -218,11 +218,11 @@ Code 2.1.278 with local response fixtures, not production models:
   binding a saved thread and an ephemeral thread to separate MCP sessions. Both inbox tools are
   checked in each thread's tool inventory, then a sibling message is fetched and
   acknowledged through Codex's MCP connection. Queued delivery to ephemeral
-  threads is unsupported, so that handoff uses a stub. The saved thread also
-  verifies native title changes without starting turns.
+  threads is unsupported, so that handoff uses a stub. The fixture also
+  verifies registration without titles or metadata subprocess launches.
 - Claude: a persistent stream-JSON process, a three-second listener renewal,
-  Stop re-arming, and a later fixture message causing another turn. The title
-  hook also verifies that the real host supplies a custom session title.
+  Stop re-arming, and a later fixture message causing another turn. The MCP server
+  registers the session without title hooks.
 
 The fixture does not cover the interactive hook-review UI, interactive Claude
 TUI, native-channel acceptance, or production-model behavior. See the
