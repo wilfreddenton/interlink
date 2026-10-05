@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-05
+
+### Added
+- `get_my_session_id` returns the current Interlink session ID locally on Claude
+  and Codex, including during broker outages. Unbound Codex sessions return a
+  setup error instead of a provisional ID.
+
+### Changed
+- Remove session titles entirely: manual overrides, automatic fallback names,
+  title tools and CLI options, Claude title hooks, title caches, polling, and the
+  Codex metadata subprocess. Discovery uses identity, session ID, project, and
+  summary. Update the Claude plugin and MCP binary together; remove custom
+  `--title` arguments and `sync-title` hooks. Existing title cache files are unused.
+  Older announcements remain compatible; retired title fields are ignored.
+- Document the accepted first-turn Codex registration requirement and track the
+  upstream startup-identity limitation for a future improvement.
+
 ## [0.10.2] - 2026-10-04
 
 ### Added

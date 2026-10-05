@@ -1,4 +1,4 @@
-import json, os, queue, shutil, socket, subprocess, threading, time, tomllib, urllib.request
+import json, os, queue, socket, subprocess, threading, time, tomllib, urllib.request
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = Path(__file__).resolve().parents[2]
@@ -93,8 +93,10 @@ if not key.exists():
 (WORK / 'peers.json').write_text('{}')
 buslog = open(WORK / 'bus.stderr', 'w')
 bus = subprocess.Popen([str(ROOT / 'target/debug/interlink-bus'), '--addr', f'127.0.0.1:{port}'], stdout=subprocess.DEVNULL, stderr=buslog)
-cli = WORK / 'codex-title-cli'
-cli.write_text('#!/usr/bin/env python3\nimport os, sys\nif sys.argv[1:2] == ["queue"]: sys.exit(0)\nos.execv(' + repr(shutil.which('codex')) + ', ["codex"] + sys.argv[1:])\n')
+cli = WORK / 'codex-queue-cli'
+unexpected = WORK / 'unexpected-codex-call'
+unexpected.unlink(missing_ok=True)
+cli.write_text('#!/usr/bin/env python3\nimport pathlib, sys\nif sys.argv[1:2] == ["queue"]: sys.exit(0)\npathlib.Path(' + repr(str(unexpected)) + ').write_text(str(sys.argv[1:]))\nsys.exit(1)\n')
 cli.chmod(0o700)
 base = tomllib.loads((ROOT / 'codex/config.toml').read_text())
 base['mcp_servers']['interlink'] = {'enabled': True, 'command': str(ROOT / 'target/debug/interlink-mcp'), 'args': ['--host', 'codex', '--key', str(key), '--peers', str(WORK / 'peers.json'), '--url', url], 'env': {'XDG_STATE_HOME': str(WORK / 'state'), 'CODEX_HOME': str(WORK / 'config'), 'INTERLINK_CODEX_BIN': str(cli)}}
@@ -123,7 +125,7 @@ try:
         response = server.call('thread/start', {'cwd': str(WORK), 'ephemeral': index == 1, 'approvalPolicy': 'never', 'sandbox': 'read-only', 'config': base})
         tid = response['thread']['id']
         ids.append(tid)
-        # Isolate title behavior from the separate first-prompt MCP startup race.
+        # Wait for MCP readiness before exercising the lifecycle hooks.
         server.call('mcpServerStatus/list', {'threadId': tid, 'serverName': 'interlink'})
         server.call('turn/start', {'threadId': tid, 'input': [{'type': 'text', 'text': 'Reply OK.'}]})
         end = time.monotonic() + 20
@@ -145,12 +147,17 @@ try:
         inventory = server.call('mcpServerStatus/list', {'threadId': tid, 'serverName': 'interlink'})
         interlink = next(s for s in inventory['data'] if s['name'] == 'interlink')
         names = {tool['name'] for tool in interlink['tools'].values()}
-        assert {'receive_messages', 'acknowledge_messages'} <= names, names
+        assert {'receive_messages', 'acknowledge_messages', 'set_summary', 'get_my_session_id'} <= names, names
+        assert 'set_session_title' not in names, names
 
     def tool(tid, name, arguments):
         result = server.call('mcpServer/tool/call', {'threadId': tid, 'server': 'interlink', 'tool': name, 'arguments': arguments})
         assert not result.get('isError'), result
         return '\n'.join(c['text'] for c in result['content'] if c['type'] == 'text')
+
+    for tid in ids:
+        assert json.loads(tool(tid, 'get_my_session_id', {})) == {'session_id': tid}
+    print('PASS: installed Codex returns each owning session ID through MCP', flush=True)
 
     # The fixture threads cannot receive real codex queue calls. Exercise the
     # connected host's fetch/ack tools directly, with queue delivery stubbed above.
@@ -170,27 +177,10 @@ try:
     assert tool(ids[1], 'receive_messages', {}).startswith('No unread messages')
     print('PASS: installed Codex exposes and executes fetch/ack tools on the owning thread', flush=True)
 
-    def wait_title(title):
-        end = time.monotonic() + 40
-        while time.monotonic() < end:
-            roster = json.load(urllib.request.urlopen(url + '/roster', timeout=2))['roster']
-            session = next(a['session'] for a in roster if a['session']['session_id'] == ids[0])
-            if session.get('title') == title:
-                return
-            time.sleep(0.1)
-        raise AssertionError(('native title was not synchronized', title, session))
-
-    server.call('thread/name/set', {'threadId': ids[0], 'name': 'Native title fixture'})
-    wait_title('Native title fixture')
-    server.call('thread/name/set', {'threadId': ids[0], 'name': 'Renamed without a turn'})
-    wait_title('Renamed without a turn')
-    tool(ids[0], 'set_session_title', {'title': 'Pinned title'})
-    server.call('thread/name/set', {'threadId': ids[0], 'name': 'Latest native title'})
-    time.sleep(6)
-    wait_title('Pinned title')
-    tool(ids[0], 'set_session_title', {'title': ''})
-    wait_title('Latest native title')
-    print('PASS: real Codex native renames synchronize without turns and respect overrides', flush=True)
+    roster = json.load(urllib.request.urlopen(url + '/roster', timeout=2))['roster']
+    assert all('title' not in a['session'] and 'title_sig' not in a for a in roster)
+    assert not unexpected.exists(), unexpected.read_text() if unexpected.exists() else ''
+    print('PASS: Codex registers without titles or metadata subprocesses', flush=True)
 
 finally:
     if server:
