@@ -42,6 +42,8 @@ pub struct Notice {
     pub retry_at: u64,
     #[serde(default)]
     pub attempt: u32,
+    #[serde(default)]
+    pub observed: bool,
 }
 
 impl Notice {
@@ -181,6 +183,28 @@ impl Mailbox {
             .filter(|r| r.unread() && r.message.status != Some(TaskStatus::Update))
             .map(|r| (r.message.from.clone(), r.message.msg_id.clone()))
             .collect();
+        if let Some(notice) = &data.notice {
+            // Consumption cannot retract a wake-up already queued in the host.
+            if !notice.observed
+                && matches!(
+                    notice.state.as_str(),
+                    "host_queued" | "inbox_queued" | "notification_sent"
+                )
+            {
+                return Ok(None);
+            }
+            if notice.observed && !messages.is_empty() {
+                let covered: HashSet<_> = notice.messages.iter().collect();
+                if messages.iter().all(|message| covered.contains(message)) {
+                    return Ok(None);
+                }
+            }
+            // A fetch/ack can race the host handoff. Keep its ID until the
+            // in-flight sender records success, even if the inbox is now empty.
+            if !notice.observed && notice.state == "preparing" && messages.is_empty() {
+                return Ok(None);
+            }
+        }
         if messages.is_empty() {
             if data.notice.take().is_some() {
                 self.save(&data)?;
@@ -188,7 +212,9 @@ impl Mailbox {
             return Ok(None);
         }
         let mut attempt = 0;
-        if let Some(notice) = &data.notice {
+        if let Some(notice) = &data.notice
+            && !notice.observed
+        {
             // A backward clock jump must not leave a reservation stuck indefinitely.
             let remaining = notice.retry_at.saturating_sub(now);
             if remaining > 0 && remaining <= MAX_NOTICE_RETRY_MS {
@@ -203,6 +229,7 @@ impl Mailbox {
             messages,
             retry_at: now.saturating_add(delay),
             attempt,
+            observed: false,
         };
         data.notice = Some(notice.clone());
         self.save(&data)?;
@@ -246,29 +273,34 @@ impl Mailbox {
                 acknowledged += 1;
             }
         }
-        // Free the reservation only when none of its covered messages still need
-        // attention. New arrivals are left unread and can immediately wake the host.
-        if data.notice.as_ref().is_some_and(|notice| {
-            let covered: HashSet<_> = notice
-                .messages
-                .iter()
-                .map(|(sender, id)| (sender.as_str(), id.as_str()))
-                .collect();
-            !data.records.iter().any(|record| {
-                record.unread()
-                    && covered
-                        .contains(&(record.message.from.as_str(), record.message.msg_id.as_str()))
-            })
-        }) {
-            data.notice = None;
-        }
         self.save(&data)?;
         Ok(acknowledged)
     }
 
-    /// Notification IDs are advisory: stale notices always fetch current unread state.
-    pub fn receive(&self, _notification_id: Option<&str>, limit: usize) -> Result<Vec<Received>> {
-        let data = self.load()?;
+    /// A matching ID (or explicit recovery) retires the wake-up, never the bodies.
+    pub fn receive(
+        &self,
+        notification_id: Option<&str>,
+        limit: usize,
+        reset_notification: bool,
+    ) -> Result<Vec<Received>> {
+        let _lock = lock(&self.path.with_extension("lock"))?;
+        let mut data = self.load()?;
+        if let Some(notice) = &mut data.notice
+            && (reset_notification || notification_id == Some(notice.id.as_str()))
+            && !notice.observed
+        {
+            notice.observed = true;
+            // One wake-up covers the current inbox, including arrivals coalesced
+            // since handoff. Partial batches must be drained by the caller.
+            notice.messages = data
+                .records
+                .iter()
+                .filter(|r| r.unread() && r.message.status != Some(TaskStatus::Update))
+                .map(|r| (r.message.from.clone(), r.message.msg_id.clone()))
+                .collect();
+            self.save(&data)?;
+        }
         let mut received: Vec<_> = data.records.into_iter().filter(Received::unread).collect();
         // Stable ordering keeps questions and failures ahead of routine progress.
         received.sort_by_key(|r| r.message.status == Some(TaskStatus::Update));
@@ -304,14 +336,184 @@ mod tests {
     }
 
     #[test]
-    fn lost_notices_recover_in_every_state_and_backoff_is_bounded() {
-        for state in [
-            "preparing",
-            "host_queued",
-            "inbox_queued",
-            "notification_sent",
-            "delivery_failed",
-        ] {
+    fn busy_review_queues_one_wakeup_despite_manual_reads_and_acknowledgements() {
+        for state in ["host_queued", "inbox_queued", "notification_sent"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("mail.json");
+            let mailbox = Mailbox::new(&path);
+            mailbox
+                .retain(&message("ready", "review", None, now_ms()), "peer")
+                .unwrap();
+            let notice = mailbox.reserve_notice_at(1_000).unwrap().unwrap();
+            mailbox.finish_notice(&notice.id, state).unwrap();
+
+            for index in 0..7 {
+                let fetched = mailbox.receive(None, 20, false).unwrap();
+                assert_eq!(fetched.len(), 1);
+                assert_eq!(mailbox.acknowledge(&ids(&fetched)).unwrap(), 1);
+                let now = 1_000 + (index + 1) * MAX_NOTICE_RETRY_MS;
+                assert!(mailbox.reserve_notice_at(now).unwrap().is_none());
+                mailbox
+                    .retain(
+                        &message(&index.to_string(), "review", None, now_ms()),
+                        "peer",
+                    )
+                    .unwrap();
+                // Reopening the MCP must not forget the host's outstanding notice.
+                assert!(
+                    Mailbox::new(&path)
+                        .reserve_notice_at(now)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            mailbox
+                .acknowledge(&ids(&mailbox.records().unwrap()))
+                .unwrap();
+            assert_eq!(mailbox.load().unwrap().notice.unwrap().id, notice.id);
+            assert!(
+                mailbox
+                    .receive(Some(&notice.id), 20, false)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(mailbox.reserve_notice().unwrap().is_none());
+
+            mailbox
+                .retain(&message("goodbye", "review", None, now_ms()), "peer")
+                .unwrap();
+            let goodbye = mailbox.reserve_notice().unwrap().unwrap();
+            assert_ne!(goodbye.id, notice.id);
+            mailbox.finish_notice(&goodbye.id, state).unwrap();
+            let fetched = mailbox.receive(Some(&goodbye.id), 20, false).unwrap();
+            assert_eq!(fetched[0].message.msg_id, "goodbye");
+            assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+            mailbox.acknowledge(&ids(&fetched)).unwrap();
+            assert!(mailbox.reserve_notice().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn observed_notice_covers_coalesced_batches_without_consuming_lost_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        let mailbox = Mailbox::new(&dir.path().join("mail.json"));
+        mailbox
+            .retain(&message("a", "task", None, now_ms()), "peer")
+            .unwrap();
+        let notice = mailbox.reserve_notice().unwrap().unwrap();
+        mailbox.finish_notice(&notice.id, "host_queued").unwrap();
+        mailbox
+            .retain(&message("b", "task", None, now_ms()), "peer")
+            .unwrap();
+        let dropped = mailbox.receive(Some(&notice.id), 1, false).unwrap();
+        assert_eq!(dropped[0].message.msg_id, "a");
+        assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+        let recovered = mailbox.receive(None, 1, false).unwrap();
+        assert_eq!(recovered[0].message.msg_id, "a");
+        mailbox.acknowledge(&ids(&recovered)).unwrap();
+        assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+        assert_eq!(
+            mailbox.receive(None, 20, false).unwrap()[0].message.msg_id,
+            "b"
+        );
+
+        mailbox
+            .retain(&message("c", "task", None, now_ms()), "peer")
+            .unwrap();
+        let next = mailbox.reserve_notice().unwrap().unwrap();
+        mailbox.finish_notice(&next.id, "host_queued").unwrap();
+        for id in [None, Some("unknown"), Some(notice.id.as_str())] {
+            assert_eq!(mailbox.receive(id, 20, false).unwrap().len(), 2);
+            assert!(!mailbox.load().unwrap().notice.unwrap().observed);
+        }
+        mailbox
+            .acknowledge(&ids(&mailbox.records().unwrap()))
+            .unwrap();
+        assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+        assert!(
+            mailbox
+                .receive(Some(&next.id), 20, false)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(mailbox.reserve_notice().unwrap().is_none());
+    }
+
+    #[test]
+    fn acknowledgement_during_handoff_does_not_lose_the_queued_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mailbox = Mailbox::new(&dir.path().join("mail.json"));
+        mailbox
+            .retain(&message("a", "task", None, now_ms()), "peer")
+            .unwrap();
+        let notice = mailbox.reserve_notice().unwrap().unwrap();
+        mailbox
+            .acknowledge(&ids(&mailbox.records().unwrap()))
+            .unwrap();
+        assert!(mailbox.reserve_notice().unwrap().is_none());
+        mailbox.finish_notice(&notice.id, "host_queued").unwrap();
+        assert_eq!(mailbox.load().unwrap().notice.unwrap().id, notice.id);
+        assert!(
+            mailbox
+                .receive(Some(&notice.id), 20, false)
+                .unwrap()
+                .is_empty()
+        );
+        mailbox.finish_notice(&notice.id, "host_queued").unwrap();
+        assert!(mailbox.load().unwrap().notice.unwrap().observed);
+        assert!(mailbox.reserve_notice().unwrap().is_none());
+    }
+
+    #[test]
+    fn legacy_accepted_notice_does_not_expire_or_require_new_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let mailbox = Mailbox::new(&dir.path().join("mail.json"));
+        mailbox
+            .retain(&message("a", "task", None, now_ms()), "peer")
+            .unwrap();
+        let notice = mailbox.reserve_notice().unwrap().unwrap();
+        mailbox.finish_notice(&notice.id, "host_queued").unwrap();
+        let mut legacy = serde_json::to_value(mailbox.load().unwrap()).unwrap();
+        for field in ["observed", "retry_at", "attempt"] {
+            legacy["notice"].as_object_mut().unwrap().remove(field);
+        }
+        atomic_write(&mailbox.path, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+        assert_eq!(
+            mailbox.receive(Some(&notice.id), 20, false).unwrap().len(),
+            1
+        );
+        assert!(mailbox.load().unwrap().notice.unwrap().observed);
+    }
+
+    #[test]
+    fn explicit_lost_notice_recovery_preserves_bodies_and_rearms_new_arrivals() {
+        let dir = tempfile::tempdir().unwrap();
+        let mailbox = Mailbox::new(&dir.path().join("mail.json"));
+        mailbox
+            .retain(&message("a", "task", None, now_ms()), "peer")
+            .unwrap();
+        let lost = mailbox.reserve_notice().unwrap().unwrap();
+        mailbox.finish_notice(&lost.id, "host_queued").unwrap();
+        let recovered = mailbox.receive(None, 20, true).unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(mailbox.receive(None, 20, false).unwrap().len(), 1);
+        assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+        mailbox.acknowledge(&ids(&recovered)).unwrap();
+        mailbox
+            .retain(&message("b", "task", None, now_ms()), "peer")
+            .unwrap();
+        let next = mailbox.reserve_notice().unwrap().unwrap();
+        assert_ne!(next.id, lost.id);
+        mailbox.finish_notice(&next.id, "host_queued").unwrap();
+        mailbox.receive(Some(&lost.id), 20, false).unwrap();
+        assert!(!mailbox.load().unwrap().notice.unwrap().observed);
+        assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+    }
+
+    #[test]
+    fn unfinished_and_failed_handoffs_retry_with_bounded_backoff() {
+        for state in ["preparing", "delivery_failed"] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("mail.json");
             let mailbox = Mailbox::new(&path);
@@ -349,9 +551,9 @@ mod tests {
                 .unwrap();
         }
         let first = mailbox.reserve_notice_at(1_000).unwrap().unwrap();
-        let fetched = mailbox.receive(None, 1).unwrap();
+        let fetched = mailbox.receive(None, 1, false).unwrap();
         assert_eq!(
-            mailbox.receive(None, 1).unwrap()[0].message.msg_id,
+            mailbox.receive(None, 1, false).unwrap()[0].message.msg_id,
             fetched[0].message.msg_id
         );
         mailbox
@@ -361,8 +563,9 @@ mod tests {
         assert_eq!(mailbox.acknowledge(&ids(&fetched)).unwrap(), 0);
         let retry = mailbox.reserve_notice_at(first.retry_at).unwrap().unwrap();
         mailbox.finish_notice(&first.id, "host_queued").unwrap();
+        mailbox.finish_notice(&retry.id, "delivery_failed").unwrap();
         assert_eq!(mailbox.load().unwrap().notice.unwrap().id, retry.id);
-        assert_eq!(mailbox.receive(None, 20).unwrap().len(), 2);
+        assert_eq!(mailbox.receive(None, 20, false).unwrap().len(), 2);
         mailbox
             .acknowledge(&ids(&mailbox.records().unwrap()))
             .unwrap();
@@ -370,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn history_consumption_without_notice_id_unblocks_future_messages() {
+    fn manual_consumption_preserves_the_queued_wakeup_for_new_arrivals() {
         let dir = tempfile::tempdir().unwrap();
         let mailbox = Mailbox::new(&dir.path().join("mail.json"));
         mailbox
@@ -381,16 +584,19 @@ mod tests {
         mailbox
             .retain(&message("b", "task", None, now_ms()), "peer")
             .unwrap();
-        let fetched = mailbox.receive(None, 1).unwrap();
+        let fetched = mailbox.receive(None, 1, false).unwrap();
         mailbox.acknowledge(&ids(&fetched)).unwrap();
+        assert!(mailbox.reserve_notice().unwrap().is_none());
+        assert_eq!(mailbox.load().unwrap().notice.unwrap().id, old.id);
+        let remaining = mailbox.receive(Some(&old.id), 20, false).unwrap();
+        assert_eq!(remaining[0].message.msg_id, "b");
+        assert!(mailbox.reserve_notice().unwrap().is_none());
+        mailbox.acknowledge(&ids(&remaining)).unwrap();
+        mailbox
+            .retain(&message("c", "task", None, now_ms()), "peer")
+            .unwrap();
         let next = mailbox.reserve_notice().unwrap().unwrap();
         assert_ne!(next.id, old.id);
-        assert_eq!(
-            mailbox.receive(Some(&old.id), 20).unwrap()[0]
-                .message
-                .msg_id,
-            "b"
-        );
     }
 
     #[test]
@@ -426,7 +632,12 @@ mod tests {
         restarted.retain(&msg, "peer").unwrap();
         assert_eq!(restarted.records().unwrap().len(), 1);
         assert!(restarted.reserve_notice().unwrap().is_none());
-        assert!(restarted.receive(Some(&notice.id), 20).unwrap().is_empty());
+        assert!(
+            restarted
+                .receive(Some(&notice.id), 20, false)
+                .unwrap()
+                .is_empty()
+        );
         assert!(restarted.reserve_notice().unwrap().is_none());
         assert_eq!(
             restarted.records().unwrap()[0].state,
@@ -468,7 +679,7 @@ mod tests {
             )
             .unwrap();
         let notice = mailbox.reserve_notice().unwrap().unwrap();
-        let records = mailbox.receive(Some(&notice.id), 20).unwrap();
+        let records = mailbox.receive(Some(&notice.id), 20, false).unwrap();
         assert_eq!(
             records
                 .iter()
@@ -496,7 +707,7 @@ mod tests {
                 "peer",
             )
             .unwrap();
-        assert_eq!(mailbox.receive(None, 20).unwrap().len(), 3);
+        assert_eq!(mailbox.receive(None, 20, false).unwrap().len(), 3);
     }
 
     #[test]
@@ -507,14 +718,14 @@ mod tests {
             .retain(&message("a", "task", None, now_ms()), "peer")
             .unwrap();
         let first = mailbox.reserve_notice().unwrap().unwrap();
-        let fetched = mailbox.receive(Some(&first.id), 20).unwrap();
+        let fetched = mailbox.receive(Some(&first.id), 20, false).unwrap();
         mailbox.acknowledge(&ids(&fetched)).unwrap();
         mailbox
             .retain(&message("b", "task", None, now_ms()), "peer")
             .unwrap();
         let second = mailbox.reserve_notice().unwrap().unwrap();
         mailbox.finish_notice(&first.id, "host_queued").unwrap();
-        let fetched = mailbox.receive(Some(&first.id), 20).unwrap();
+        let fetched = mailbox.receive(Some(&first.id), 20, false).unwrap();
         assert_eq!(mailbox.load().unwrap().notice.unwrap().id, second.id);
         mailbox.acknowledge(&ids(&fetched)).unwrap();
         assert!(
@@ -579,7 +790,7 @@ mod tests {
         let notice = mailbox.reserve_notice().unwrap().unwrap();
         assert_eq!(
             mailbox
-                .receive(Some(&notice.id), MAX_RECORDS)
+                .receive(Some(&notice.id), MAX_RECORDS, false)
                 .unwrap()
                 .len(),
             MAX_RECORDS
@@ -617,7 +828,7 @@ mod tests {
         mailbox
             .acknowledge(&[(progress.from, progress.msg_id)])
             .unwrap();
-        let received = mailbox.receive(None, 1).unwrap();
+        let received = mailbox.receive(None, 1, false).unwrap();
         assert_eq!(received.len(), 1);
         assert_eq!(received[0].peer, "other");
         mailbox.acknowledge(&ids(&received)).unwrap();
@@ -631,7 +842,7 @@ mod tests {
             .retain(&message("request", "task", None, now_ms()), "peer")
             .unwrap();
         assert_eq!(
-            mailbox.receive(None, 1).unwrap()[0].message.msg_id,
+            mailbox.receive(None, 1, false).unwrap()[0].message.msg_id,
             "request"
         );
     }

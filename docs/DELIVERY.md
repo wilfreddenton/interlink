@@ -18,25 +18,47 @@ notice always reads current state and never replays acknowledged bodies.
 
 An inbox notice requires a tool call even when it is the only event in an idle
 conversation. Silence applies only after an empty fetch or acknowledgement; it
-does not mean skipping the inbox check. If a turn ends without calling either
-tool, messages remain unread and notification retries continue. Unavailable
-tools and fetch or acknowledgement errors should be surfaced as blockers.
+does not mean skipping the inbox check. If a turn ends without fetching and
+acknowledging, messages remain unread. An accepted notice does not trigger timed
+reminders. Unavailable tools and fetch or acknowledgement errors should be
+surfaced as blockers.
 
-There is one current notification reservation per session. It expires after
-30 seconds, then retries with 60, 120, 240, and at most 300 seconds between
-reservations while attention-worthy messages remain unread. Startup and a
-one-second reconciliation loop recover lost notices and interrupted sends.
-Notifications already queued in a host cannot be retracted, so duplicate wake-ups
-are possible. Neither missing notice IDs nor manual/history consumption can
-permanently block future notices. Persisted notices from the earlier mailbox
-format expire on their next reconciliation.
+There is at most one outstanding accepted wake-up per session. Once a host
+handoff succeeds, the notice stays outstanding until a fetch supplies its matching
+`notification_id`, even if manual reads or history have already consumed all its
+messages. New arrivals share that wake-up. Acknowledgement does not cancel a
+notice already queued in the host or allow another one to accumulate behind it.
 
-The default fetch batch is 20 messages, with a maximum of 100; non-progress
-messages come first. Acknowledge the returned receipts before fetching another
-batch. Acknowledgement is idempotent, scoped to sender key and message ID, and
-never consumes a newer arrival. It also releases a reservation when all messages
-covered by that reservation have been acknowledged or superseded. Notice IDs are
-advisory and are not required for consumption.
+A matching fetch retires the wake-up and covers the current inbox, including
+arrivals since handoff. Fetching does not consume bodies. Drain full batches and
+acknowledge the exact returned receipts; unread messages covered by that fetch do
+not cause reminders. Later arrivals can produce a new wake-up. Stale or missing
+notice IDs still fetch current unread state, but cannot retire another notice.
+The default batch is 20 messages, with a maximum of 100; non-progress messages
+come first. Acknowledgements are idempotent, scoped to sender key and message ID,
+and never consume a newer arrival.
+
+Failed or unfinished handoffs retry after 30 seconds, then 60, 120, 240, and at
+most 300 seconds between reservations while attention-worthy messages remain
+unread. A one-second reconciliation loop resumes this work after restart.
+Accepted notices and their observation state also survive MCP restarts. Older
+mailboxes without observation metadata are treated as unobserved; an accepted
+legacy notice is not resent merely because its old retry deadline expired.
+
+After upgrading, reconnect or restart the receiving Interlink MCP processes in
+Claude and Codex so they run the new notification logic and expose the recovery
+option. This change requires no broker restart or mailbox reset. Preserve mailbox
+files: they contain unread messages and acknowledgement state. Notices already
+queued by older processes may still arrive and return an empty inbox.
+
+If a host accepts a notice but loses it, or the fetch response is lost, use
+`receive_messages` to recover unread bodies. For a lost or stuck host notice,
+`receive_messages(reset_notification=true)` explicitly retires the outstanding
+wake-up without its ID and restores notification eligibility for later arrivals.
+Use this only for recovery, not routine polling: it cannot retract a notice that
+is still queued. Read and acknowledge the returned messages as usual. Previously
+queued notices, uncertain handoffs, and a crash between host acceptance and saving
+that result can still produce stale wake-ups; notifications are not exactly-once.
 
 `conversation_history(peer, consume=false)` is read-only. Prefer reading it and
 acknowledging exact receipts afterward. `consume=true` explicitly consumes exactly
@@ -205,10 +227,11 @@ The outbound log and ordinary outbox remain in memory.
 `just test` exercises the shared gate, inbox restart/cursor behavior, concurrent
 appends, partial-record repair, default renewal interval with a paused clock,
 Codex binding, retry limits, saved failures, and cross-host delivery. Shared
-regressions cover busy-host history consumption, restart deduplication, notification
-expiry, lost fetch responses, explicit acknowledgement, progress coalescing, and
-storage failures across all three adapters. Process integration tests use local
-brokers and a recording queue executable.
+regressions cover busy-host reads and history consumption without accumulating
+wake-ups, restart deduplication, failed-handoff expiry, stale IDs, explicit notice
+recovery, partial batches, lost fetch responses, acknowledgement, progress
+coalescing, and storage failures across all three adapters. Process integration
+tests use local brokers and a recording queue executable.
 
 `just host-test` requires Python 3.11+, installed `codex` and `claude` CLIs, and
 localhost socket access. The recorded validation used Codex 0.160.0 and Claude

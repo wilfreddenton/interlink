@@ -423,8 +423,12 @@ struct HistoryArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ReceiveArgs {
-    /// Optional advisory notice ID. Stale or missing IDs still fetch current unread state.
+    /// Pass the notice ID to retire that wake-up. Stale or missing IDs still fetch current unread messages.
     notification_id: Option<String>,
+    /// Explicit recovery for a lost host notice: retire the outstanding wake-up without its ID.
+    /// Use only when notifications are stuck; an already queued notice may still arrive later.
+    #[serde(default)]
+    reset_notification: bool,
     /// Maximum messages to fetch without consuming them, 1 through 100 (default 20).
     limit: Option<u32>,
 }
@@ -824,7 +828,7 @@ impl Agent {
     }
 
     #[tool(
-        description = "Fetch unread peer messages without consuming them. notification_id is optional and advisory. After reading, call acknowledge_messages with their exact receipt objects, then fetch again if the batch was full. A lost response remains recoverable. Empty means continue silently. Progress needs no reply; highlight questions, failures, and results."
+        description = "Fetch unread peer messages without consuming them. Pass notification_id from a notice to retire its wake-up; omit for manual reads. Use reset_notification=true only to recover a lost or stuck host notice, never for routine polling. After reading, call acknowledge_messages with their exact receipt objects, then fetch again if the batch was full. A lost response remains recoverable. Empty means continue silently. Progress needs no reply; highlight questions, failures, and results."
     )]
     async fn receive_messages(
         &self,
@@ -836,7 +840,11 @@ impl Agent {
             .inner
             .mailbox()
             .map_err(state_error)?
-            .receive(args.notification_id.as_deref(), limit)
+            .receive(
+                args.notification_id.as_deref(),
+                limit,
+                args.reset_notification,
+            )
             .map_err(state_error)?;
         let text = if records.is_empty() {
             "No unread messages. Continue silently; no reply is needed.".into()

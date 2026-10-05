@@ -198,9 +198,12 @@ with their exact receipt objects. History is read-only unless `consume=true`. Pr
 superseded by newer task progress or a terminal result; questions and failures
 remain individually available.
 
-Delivery is not exactly-once. Lost notices retry with capped backoff, and a dropped
-fetch response remains unread. Explicitly acknowledged bodies are excluded from
-later unread fetches. The `consume=true` history shortcut consumes before replying,
+Delivery is not exactly-once. Failed or unfinished notice handoffs retry with
+capped backoff. Accepted notices coalesce new arrivals until fetched with their
+matching notification ID; message acknowledgement alone does not release them.
+A dropped fetch response remains unread. Recover a lost host notice explicitly
+with `receive_messages(reset_notification=true)`. Explicitly acknowledged bodies
+are excluded from later unread fetches. The `consume=true` history shortcut consumes before replying,
 so an interrupted response may require rereading history. `bus_accepted` means relay acceptance, never a read
 receipt. Receiver acknowledgements are local; no remote receipt protocol exists.
 

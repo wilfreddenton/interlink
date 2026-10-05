@@ -975,6 +975,34 @@ async fn busy_host_history_consumption_and_restart_for_all_adapters() {
                 json!({"peer":"peer", "consume":true}),
             )
             .await;
+        let mailbox_path = dir
+            .path()
+            .join("state/interlink/mailbox")
+            .join(receiver.id().to_b64())
+            .join(format!("{CODEX_THREAD}.json"));
+        for id in ["follow-up-report", "verification-report"] {
+            broker
+                .enqueue(
+                    &route,
+                    json!(sender.sign(receiver.id(), id, now_ms(), id)),
+                    now_ms(),
+                )
+                .await
+                .unwrap();
+            drained(&broker, &route).await;
+            // Let the real notifier reconcile arrivals while its first notice
+            // is still waiting behind the host's busy review turn.
+            sleep(Duration::from_millis(1200)).await;
+            let received = client.tool("receive_messages", json!({})).await;
+            assert!(tool_text(&received).contains(id));
+            client.acknowledge(&received).await;
+            let data: Value = serde_json::from_slice(&fs::read(&mailbox_path).unwrap()).unwrap();
+            assert_eq!(
+                data["notice"]["id"],
+                notice_id(&notice),
+                "{host}/{channels}"
+            );
+        }
         client.close().await;
         let mut client =
             Client::start_options(dir.path(), host, &url, &cli, CODEX_THREAD, channels).await;
@@ -1065,7 +1093,7 @@ async fn persistence_failure_retains_broker_message_until_local_commit() {
 }
 
 #[tokio::test]
-async fn lost_notice_and_unacknowledged_fetch_recover_for_all_adapters() {
+async fn accepted_notice_and_unacknowledged_fetch_survive_restart_for_all_adapters() {
     for (host, channels) in [("codex", false), ("claude", true), ("claude", false)] {
         let dir = tempfile::tempdir().unwrap();
         let receiver = AgentKey::generate().unwrap();
@@ -1122,13 +1150,10 @@ async fn lost_notice_and_unacknowledged_fetch_recover_for_all_adapters() {
         if host == "codex" {
             bind(&mut client, CODEX_THREAD).await;
         }
-        wait_until(|| {
-            let data: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            data["notice"]["id"]
-                .as_str()
-                .is_some_and(|id| id != first_id)
-        })
-        .await;
+        // Allow reconciliation to run past an expired legacy retry deadline.
+        sleep(Duration::from_millis(1200)).await;
+        let data: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(data["notice"]["id"], first_id, "{host}/{channels}");
         let dropped = client
             .tool("receive_messages", json!({"notification_id":first_id}))
             .await;
@@ -1150,6 +1175,14 @@ async fn lost_notice_and_unacknowledged_fetch_recover_for_all_adapters() {
             .await
             .unwrap();
         drained(&broker, &route).await;
+        wait_until(|| {
+            let data: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            data["notice"]["id"]
+                .as_str()
+                .is_some_and(|id| id != first_id)
+                && data["notice"]["state"] != "preparing"
+        })
+        .await;
         client.acknowledge(&recovered).await;
         client.acknowledge(&recovered).await;
         let remaining = client
@@ -1158,9 +1191,21 @@ async fn lost_notice_and_unacknowledged_fetch_recover_for_all_adapters() {
         assert!(!tool_text(&remaining).contains("first body"));
         assert!(tool_text(&remaining).contains("second body"));
         client.acknowledge(&remaining).await;
+        let pending: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(pending["notice"]["observed"], false);
         assert!(
-            tool_text(&client.tool("receive_messages", json!({})).await).starts_with("No unread")
+            tool_text(
+                &client
+                    .tool("receive_messages", json!({"reset_notification":true}))
+                    .await
+            )
+            .starts_with("No unread")
         );
+        wait_until(|| {
+            let data: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            data["notice"].is_null()
+        })
+        .await;
         client.close().await;
         server.abort();
     }

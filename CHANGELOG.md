@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-05
+
+### Fixed
+- Keep accepted inbox wake-ups outstanding until fetched with their matching
+  notification ID, independently of message acknowledgement. Manual reads during
+  busy Claude or Codex turns no longer accumulate obsolete notices; accepted
+  notices also stop retrying on a timer. Stale IDs cannot retire newer notices.
+- Add explicit `receive_messages(reset_notification=true)` recovery for a lost
+  host notice. Message bodies remain unread until acknowledged, including after
+  partial batches, interrupted fetches, and MCP restarts. Old queued notices
+  cannot be retracted, and uncertain handoffs can still duplicate a notice.
+
 ## [0.11.0] - 2026-10-05
 
 ### Added

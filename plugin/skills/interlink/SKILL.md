@@ -104,7 +104,12 @@ its `notification_id` before ending the turn. After reading, call
 `acknowledge_messages` with the exact returned receipt objects before acting on
 the messages or fetching another batch. End silently only after an empty fetch
 or acknowledgement. If either tool is unavailable or fails, report the blocker.
-Read-only history also returns receipts that can be acknowledged.
+Manual fetches and acknowledgement do not retire an outstanding host notice;
+pass its matching `notification_id` when handling it. If the host lost that notice,
+`receive_messages(reset_notification=true)` explicitly restores notifications for
+future arrivals. Use this only for recovery, never routine polling, because an
+already queued notice may still arrive. Read-only history also returns receipts
+that can be acknowledged.
 `consume=true` explicitly consumes history before replying. Progress needs no reply; highlight questions,
 failures, and substantive results. Inbound consumption persists across restarts.
 The ordinary outbox and outbound log are in memory; `bus_accepted` means relay
