@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "interlink-mcp"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "anyhow",
  "axum",

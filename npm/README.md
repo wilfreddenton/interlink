@@ -24,7 +24,8 @@ This registers an MCP server only. For Claude's default incoming-message wake,
 install the [Claude plugin](../plugin/README.md), which also installs the Stop
 listener. For Codex, follow the [Codex adapter guide](../codex/README.md). Codex
 support starts at Interlink 0.9.0; use 0.10.0 or newer for shared inbox
-consumption and lost-notification recovery. Version 0.11.0 removes session titles and their synchronization.
+consumption. Use 0.11.1 or newer to prevent notification backlogs and recover lost
+host notices explicitly. Version 0.11.0 removes session titles and their synchronization.
 When upgrading from 0.10.1 or 0.10.2, update the Claude plugin together with the
 binary and follow the [upgrade notes](../docs/SESSIONS.md#upgrading-from-session-titles).
 

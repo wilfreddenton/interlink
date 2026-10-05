@@ -95,14 +95,23 @@ attempts with two-second backoff. The 12 KiB CLI limit applies to notices and
 legacy recovery entries, not bodies fetched through MCP. Failed notices survive
 restart under `failed/<identity>/<thread>.json` in the Interlink state directory.
 The failure store holds 64 entries, including at most one current ordinary notice
-failure. The mailbox retries lost or failed notices after 30 seconds with backoff
-capped at five minutes. A full or unavailable failure store does not block this
-reconciliation. Retries can duplicate notices; acknowledged bodies stay consumed.
+failure. The mailbox retries failed or unfinished handoffs after 30 seconds with
+backoff capped at five minutes. Accepted notices do not expire: later arrivals
+share the outstanding wake-up until a fetch supplies its matching notification ID.
+Manual reads and message acknowledgements leave that wake-up outstanding, so a
+busy review does not accumulate notices. A full or unavailable failure store does
+not block reconciliation. Uncertain handoffs can duplicate notices; acknowledged
+bodies stay consumed.
 
 Use `failed_deliveries(action="list")` to inspect failure IDs, `read` to recover
 the notice, `retry` after repairing the CLI or daemon, and `discard` to remove a
 saved failure. A timeout may have queued the notice despite reporting failure.
 `receive_messages` and history can recover bodies without repairing notifications.
+If Codex accepted a notice but lost it, use
+`receive_messages(reset_notification=true)` to retire the outstanding wake-up and
+restore notifications for future arrivals, then acknowledge the returned receipts.
+This is an explicit recovery action, not routine polling; an old notice still in
+Codex's queue may arrive afterward.
 Pre-upgrade saved failures may still contain full messages; these retain their
 existing recovery behavior and CLI size limits.
 
