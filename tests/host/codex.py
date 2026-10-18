@@ -1,4 +1,4 @@
-import json, os, queue, socket, subprocess, threading, time, tomllib, urllib.request
+import json, os, queue, socket, subprocess, threading, time, tomllib, urllib.request, uuid
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = Path(__file__).resolve().parents[2]
@@ -6,12 +6,14 @@ WORK = ROOT / 'target/host-validation/codex-run'
 WORK.mkdir(parents=True, exist_ok=True)
 
 class Provider(BaseHTTPRequestHandler):
+    requests = []
 
     def log_message(self, *args):
         pass
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+        self.requests.append(body)
         item = {'id': 'msg_fixture', 'type': 'message', 'role': 'assistant', 'status': 'completed', 'content': [{'type': 'output_text', 'text': 'OK', 'annotations': []}]}
         response = {'id': 'resp_fixture', 'object': 'response', 'status': 'completed', 'output': [item], 'usage': {'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2}}
         events = [('response.created', {'response': {**response, 'status': 'in_progress', 'output': []}}), ('response.output_item.added', {'output_index': 0, 'item': {**item, 'status': 'in_progress', 'content': []}}), ('response.output_text.delta', {'output_index': 0, 'content_index': 0, 'item_id': item['id'], 'delta': 'OK'}), ('response.output_item.done', {'output_index': 0, 'item': item}), ('response.completed', {'response': response})]
@@ -94,9 +96,11 @@ if not key.exists():
 buslog = open(WORK / 'bus.stderr', 'w')
 bus = subprocess.Popen([str(ROOT / 'target/debug/interlink-bus'), '--addr', f'127.0.0.1:{port}'], stdout=subprocess.DEVNULL, stderr=buslog)
 cli = WORK / 'codex-queue-cli'
+queued = WORK / 'queued-notices.jsonl'
+queued.unlink(missing_ok=True)
 unexpected = WORK / 'unexpected-codex-call'
 unexpected.unlink(missing_ok=True)
-cli.write_text('#!/usr/bin/env python3\nimport pathlib, sys\nif sys.argv[1:2] == ["queue"]: sys.exit(0)\npathlib.Path(' + repr(str(unexpected)) + ').write_text(str(sys.argv[1:]))\nsys.exit(1)\n')
+cli.write_text('#!/usr/bin/env python3\nimport json, pathlib, sys\nif sys.argv[1:2] == ["queue"]:\n with open(' + repr(str(queued)) + ', "a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n sys.exit(0)\npathlib.Path(' + repr(str(unexpected)) + ').write_text(str(sys.argv[1:]))\nsys.exit(1)\n')
 cli.chmod(0o700)
 base = tomllib.loads((ROOT / 'codex/config.toml').read_text())
 base['mcp_servers']['interlink'] = {'enabled': True, 'command': str(ROOT / 'target/debug/interlink-mcp'), 'args': ['--host', 'codex', '--key', str(key), '--peers', str(WORK / 'peers.json'), '--url', url], 'env': {'XDG_STATE_HOME': str(WORK / 'state'), 'CODEX_HOME': str(WORK / 'config'), 'INTERLINK_CODEX_BIN': str(cli)}}
@@ -176,6 +180,79 @@ try:
     assert 'Acknowledged 1 ' in acknowledged, acknowledged
     assert tool(ids[1], 'receive_messages', {}).startswith('No unread messages')
     print('PASS: installed Codex exposes and executes fetch/ack tools on the owning thread', flush=True)
+
+    # The provider deliberately never calls tools. Exercise the installed host's
+    # actual Stop continuation and warning path, without depending on a model
+    # happening to ignore a notice in this run.
+    for tid in ids:
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            server.call('thread/read', {'threadId': tid, 'includeTurns': False})
+            if any(e.get('method') == 'turn/completed' and e['params']['threadId'] == tid for e in server.events):
+                break
+            time.sleep(.1)
+        else:
+            raise AssertionError('initial fixture turn did not complete')
+    tool(ids[1], 'send_message', {'to': 'self', 'session': ids[0], 'text': 'deliberately ignored inbox notice'})
+    end = time.monotonic() + 15
+    while time.monotonic() < end:
+        entries = [json.loads(line) for line in queued.read_text().splitlines()] if queued.exists() else []
+        notices = [e[-1] for e in entries if e[2] == ids[0]]
+        if notices:
+            break
+        time.sleep(.1)
+    else:
+        raise AssertionError('missing recorded notice')
+    notice = notices[0]
+    busy_check = json.loads(tool(ids[0], 'check_codex_inbox', {'thread_id': ids[0], 'stop_hook_active': False}))
+    assert busy_check['decision'] == 'block' and 'notification_id' not in busy_check['reason'], busy_check
+    tool(ids[0], 'bind_codex_session', {'thread_id': ids[0], 'prompt': 'Quoted notice: ' + notice})
+    quoted_check = json.loads(tool(ids[0], 'check_codex_inbox', {'thread_id': ids[0], 'stop_hook_active': False}))
+    assert 'notification_id' not in quoted_check['reason'], 'quoted notice was treated as dequeued'
+    before_requests = len(Provider.requests)
+    before_events = len(server.events)
+    server.call('thread/queue/add', {'threadId': ids[0], 'clientUserMessageId': str(uuid.uuid4()),
+                                   'input': [{'type': 'text', 'text': notice}]})
+    end = time.monotonic() + 25
+    while time.monotonic() < end:
+        server.call('thread/read', {'threadId': ids[0], 'includeTurns': False})
+        recent = server.events[before_events:]
+        if len(Provider.requests) >= before_requests + 2 and any(
+            e.get('method') == 'turn/completed' and e['params']['threadId'] == ids[0] for e in recent
+        ):
+            break
+        time.sleep(.1)
+    else:
+        raise AssertionError('Stop hook did not continue and finish the ignored-notice turn')
+    assert len(Provider.requests) == before_requests + 2, 'repeated Stop continuation'
+    assert 'Interlink inbox needs attention' in json.dumps(recent), recent
+    assert 'Interlink has 1 unread messages' in json.dumps(Provider.requests[-1]), 'missing recovery prompt'
+    notification_id = notice.split('notification_id="', 1)[1].split('"', 1)[0]
+    assert notification_id in json.dumps(Provider.requests[-1]), 'prompt hook did not track the dequeued notice'
+    inbox = next((WORK/'state/interlink/mailbox').glob('*/' + ids[0] + '.json'))
+    state = json.loads(inbox.read_text())
+    assert state['notice']['host_started'] and not state['notice']['observed'], state
+    assert sum(r['state'] != 'receiver_acknowledged' for r in state['records']) == 1
+    assert queued.read_text().count(ids[0]) == 1, 'Stop hook queued another notification'
+    received = tool(ids[0], 'receive_messages', {'notification_id': notification_id})
+    receipts = [json.loads(line.split('] Receipt: ', 1)[1]) for line in received.splitlines() if '] Receipt: ' in line]
+    tool(ids[0], 'acknowledge_messages', {'messages': receipts})
+    assert json.loads(tool(ids[0], 'check_codex_inbox', {'thread_id': ids[0], 'stop_hook_active': True})) == {}
+    tool(ids[1], 'send_message', {'to': 'self', 'session': ids[0], 'text': 'new arrival after recovery'})
+    end = time.monotonic() + 15
+    while time.monotonic() < end:
+        notices = [e[-1] for e in map(json.loads, queued.read_text().splitlines()) if e[2] == ids[0]]
+        if len(notices) == 2:
+            break
+        time.sleep(.1)
+    else:
+        raise AssertionError('recovery did not rearm later notifications')
+    new_id = notices[-1].split('notification_id="', 1)[1].split('"', 1)[0]
+    assert new_id != notification_id
+    received = tool(ids[0], 'receive_messages', {'notification_id': new_id})
+    receipts = [json.loads(line.split('] Receipt: ', 1)[1]) for line in received.splitlines() if '] Receipt: ' in line]
+    tool(ids[0], 'acknowledge_messages', {'messages': receipts})
+    print('PASS: ignored notice gets one Stop recovery, then a visible warning, without duplicate queueing or consumption', flush=True)
 
     roster = json.load(urllib.request.urlopen(url + '/roster', timeout=2))['roster']
     assert all('title' not in a['session'] and 'title_sig' not in a for a in roster)

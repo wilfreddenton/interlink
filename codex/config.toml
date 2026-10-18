@@ -1,5 +1,5 @@
 # Merge these sections into ~/.codex/config.toml, then review them in /hooks.
-# Install Interlink 0.11.0 or newer first.
+# Install Interlink 0.11.2 or newer first.
 [mcp_servers.interlink]
 command = "interlink-mcp"
 args = ["--host", "codex"]
@@ -26,7 +26,7 @@ input = { thread_id = "${session_id}" }
 type = "mcp_tool"
 server = "interlink"
 tool = "bind_codex_session"
-input = { thread_id = "${session_id}" }
+input = { thread_id = "${session_id}", prompt = "${prompt}" }
 
 [[hooks.PreToolUse]]
 matcher = "^mcp__interlink__"
@@ -40,5 +40,5 @@ input = { thread_id = "${session_id}" }
 [[hooks.Stop.hooks]]
 type = "mcp_tool"
 server = "interlink"
-tool = "bind_codex_session"
-input = { thread_id = "${session_id}" }
+tool = "check_codex_inbox"
+input = { thread_id = "${session_id}", stop_hook_active = "${stop_hook_active}" }

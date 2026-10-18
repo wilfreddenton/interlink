@@ -44,6 +44,8 @@ pub struct Notice {
     pub attempt: u32,
     #[serde(default)]
     pub observed: bool,
+    #[serde(default)]
+    pub host_started: bool,
 }
 
 impl Notice {
@@ -107,6 +109,45 @@ impl Mailbox {
 
     pub fn records(&self) -> Result<Vec<Received>> {
         Ok(self.load()?.records)
+    }
+
+    pub fn notice(&self) -> Result<Option<Notice>> {
+        Ok(self.load()?.notice)
+    }
+
+    pub fn start_notice(&self, id: &str) -> Result<()> {
+        let _lock = lock(&self.path.with_extension("lock"))?;
+        let mut data = self.load()?;
+        if let Some(notice) = &mut data.notice
+            && notice.id == id
+            && !notice.host_started
+        {
+            notice.host_started = true;
+            self.save(&data)?;
+        }
+        Ok(())
+    }
+
+    /// Only a notice seen by the prompt hook is known to have left the host queue.
+    pub fn stop_check(&self) -> Result<(usize, Option<String>)> {
+        let _lock = lock(&self.path.with_extension("lock"))?;
+        let mut data = self.load()?;
+        let unread = data
+            .records
+            .iter()
+            .filter(|r| r.unread() && r.message.status != Some(TaskStatus::Update))
+            .count();
+        let mut notification_id = None;
+        if let Some(notice) = &mut data.notice
+            && notice.host_started
+        {
+            notification_id = Some(notice.id.clone());
+            if unread == 0 && !notice.observed {
+                notice.observed = true;
+                self.save(&data)?;
+            }
+        }
+        Ok((unread, notification_id))
     }
 
     pub fn retain(&self, message: &SignedMessage, peer: &str) -> Result<()> {
@@ -230,6 +271,7 @@ impl Mailbox {
             retry_at: now.saturating_add(delay),
             attempt,
             observed: false,
+            host_started: false,
         };
         data.notice = Some(notice.clone());
         self.save(&data)?;
@@ -333,6 +375,71 @@ mod tests {
             .iter()
             .map(|r| (r.message.from.clone(), r.message.msg_id.clone()))
             .collect()
+    }
+
+    #[test]
+    fn stop_check_preserves_queued_notice_but_recovers_started_notice_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mailbox.json");
+        let mailbox = Mailbox::new(&path);
+        mailbox
+            .retain(&message("first", "t", None, now_ms()), "peer")
+            .unwrap();
+        let notice = mailbox.reserve_notice().unwrap().unwrap();
+        mailbox.finish_notice(&notice.id, "host_queued").unwrap();
+        assert_eq!(mailbox.stop_check().unwrap(), (1, None));
+        mailbox.start_notice("stale").unwrap();
+        assert_eq!(mailbox.stop_check().unwrap(), (1, None));
+        let received = mailbox.receive(None, 100, false).unwrap();
+        mailbox.acknowledge(&ids(&received)).unwrap();
+        assert_eq!(mailbox.stop_check().unwrap(), (0, None));
+        mailbox
+            .retain(&message("second", "t", None, now_ms()), "peer")
+            .unwrap();
+        assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+
+        mailbox.start_notice(&notice.id).unwrap();
+        let mailbox = Mailbox::new(&path);
+        assert_eq!(mailbox.stop_check().unwrap(), (1, Some(notice.id.clone())));
+        let received = mailbox.receive(Some(&notice.id), 100, false).unwrap();
+        assert_eq!(received[0].message.msg_id, "second");
+        assert_eq!(
+            mailbox.stop_check().unwrap().0,
+            1,
+            "fetch is not acknowledgement"
+        );
+        mailbox.acknowledge(&ids(&received)).unwrap();
+        assert_eq!(mailbox.stop_check().unwrap().0, 0);
+        mailbox
+            .retain(&message("third", "t", None, now_ms()), "peer")
+            .unwrap();
+        assert_ne!(mailbox.reserve_notice().unwrap().unwrap().id, notice.id);
+    }
+
+    #[test]
+    fn stop_check_retires_only_dequeued_empty_notices_and_ignores_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let mailbox = Mailbox::new(&dir.path().join("mailbox.json"));
+        mailbox
+            .retain(
+                &message("progress", "t", Some(TaskStatus::Update), now_ms()),
+                "peer",
+            )
+            .unwrap();
+        assert_eq!(mailbox.stop_check().unwrap(), (0, None));
+        mailbox
+            .retain(&message("question", "q", None, now_ms()), "peer")
+            .unwrap();
+        let notice = mailbox.reserve_notice().unwrap().unwrap();
+        // The prompt hook can run before queue acceptance is saved.
+        mailbox.start_notice(&notice.id).unwrap();
+        let received = mailbox.receive(None, 100, false).unwrap();
+        mailbox.acknowledge(&ids(&received)).unwrap();
+        mailbox.stop_check().unwrap();
+        mailbox.finish_notice(&notice.id, "host_queued").unwrap();
+        assert!(mailbox.notice().unwrap().unwrap().observed);
+        assert!(mailbox.reserve_notice().unwrap().is_none());
+        assert!(mailbox.notice().unwrap().is_none());
     }
 
     #[test]
@@ -474,10 +581,11 @@ mod tests {
         let notice = mailbox.reserve_notice().unwrap().unwrap();
         mailbox.finish_notice(&notice.id, "host_queued").unwrap();
         let mut legacy = serde_json::to_value(mailbox.load().unwrap()).unwrap();
-        for field in ["observed", "retry_at", "attempt"] {
+        for field in ["observed", "retry_at", "attempt", "host_started"] {
             legacy["notice"].as_object_mut().unwrap().remove(field);
         }
         atomic_write(&mailbox.path, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(mailbox.stop_check().unwrap(), (1, None));
         assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
         assert_eq!(
             mailbox.receive(Some(&notice.id), 20, false).unwrap().len(),

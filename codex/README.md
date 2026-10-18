@@ -12,10 +12,10 @@ adapter uses `codex queue`; `--no-daemon`, remote app servers, and the desktop a
 are not supported by this adapter. Ephemeral (`codex exec --ephemeral`) threads
 cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.11.0 or newer:
+Install Interlink 0.11.2 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.11.0 --locked
+cargo install interlink-mcp --version 0.11.2 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`
@@ -39,6 +39,16 @@ Restart Codex, review and trust the binding hooks in `/hooks`, and send one
 prompt. No hook-trust or sandbox bypass flags are needed. `SessionStart` can run
 before MCP is ready, so prompt, Interlink tool, and completed-turn hooks provide
 fallbacks.
+The `UserPromptSubmit` hook also passes the prompt so Interlink can recognize
+its own notification leaving the host queue. The `Stop` hook calls
+`check_codex_inbox` to recover skipped inbox work. When upgrading an existing
+setup, install the new binary and restart and resume each open Codex chat first.
+Check `/mcp verbose` in each chat: Interlink must expose `check_codex_inbox`,
+`receive_messages`, and `acknowledge_messages`. Then replace those two hook
+definitions with the sample and review their new hashes in `/hooks`. Updating
+only the binary does not enable the guard. A successful MCP configuration reload
+request only queues a refresh; it does not prove an already-open chat has switched
+to the new process. Verify the active tool list before enabling the new Stop hook.
 The session becomes discoverable after its binding hook succeeds. If binding
 has not run, sending returns a setup error instead of using a random thread.
 
@@ -126,6 +136,53 @@ use the shared `send_message` status fields and server instructions.
 
 ## Validation
 
+### A turn finishes but its response is not visible
+
+Check the terminal footer before retrying delivery. In Codex 0.163.0, selection
+mode and a view of earlier messages can keep the displayed transcript on old
+output while a queued turn runs and completes. The footer can show `New activity`,
+`enter copy & follow`, or `enter/esc latest`. When the chat is idle, follow those
+shortcuts to return to the newest output. If a selection is active, one Esc clears
+it and a second Esc returns to the latest view. Do not press Esc during an active
+turn, since it can interrupt work.
+
+A saved response alone does not establish that it was visible in the terminal.
+Check the displayed view as well as fetch/acknowledgement and the saved transcript.
+The automated host tests below do not exercise terminal selection or scrolling.
+
+### A notice runs without fetching the inbox
+
+If the turn ends without `receive_messages`, unread messages remain in the
+mailbox. The updated Stop hook checks for unread messages other than routine
+progress and asks Codex to fetch and acknowledge them before finishing. It allows
+one Stop continuation; if any Stop hook already continued the turn and messages
+remain unread, it surfaces an `Interlink inbox needs attention` warning instead
+of looping. The guard does not consume messages or queue another notification.
+
+The prompt hook records when the current notification reaches Codex. Only then
+may the recovery prompt supply its ID to `receive_messages`. If the notification
+is still queued behind a busy turn, the guard uses a plain fetch, preserving that
+one outstanding notification. This distinction survives MCP restarts. An empty
+inbox also retires a notification known to have started, so a skipped fetch after
+manual consumption cannot strand later arrivals.
+
+The guard needs a running, trusted hook and an available MCP connection. It does
+not wake an idle chat whose notification was lost before the prompt hook ran,
+and it does not restart interrupted turns. Legacy notices have no prompt-delivery
+record. For those cases, or after a recovery warning, explicitly request
+`receive_messages(reset_notification=true)`, read the returned messages, and
+acknowledge their exact receipts. Do not resend the original message to recover
+its notification. See [notification recovery](../docs/DELIVERY.md#shared-inbox-and-consumption).
+
+### Tool availability and automated checks
+
+If the Stop hook reports `tool call failed for interlink/check_codex_inbox`, check
+whether that tool appears in this chat's `/mcp verbose` output. An older running
+Interlink process does not gain new tools when its executable is replaced on disk.
+Restart and resume the affected Codex chat, then verify the tool is available.
+Other chats may already have refreshed successfully, so check the affected chat
+itself. Do not reset notifications or resend messages to repair a missing tool.
+
 If inbox notices start turns but the agent cannot fetch or acknowledge, inspect
 `/mcp verbose` in that conversation. Its Interlink tool list must include both
 `receive_messages` and `acknowledge_messages`. A queued notice can reach a chat
@@ -135,6 +192,12 @@ After an upgrade, reconnect the MCP server or restart and resume Codex if the
 active connection still exposes the old tool list. Then fetch and acknowledge
 the unread messages. Changing the notification retry interval cannot restore
 missing tools.
+
+Tools can also be present but denied by the host approval policy. A headless
+session with approvals set to `never` must already have permission for the
+messaging tools it needs. The opt-in `just live-host-test` grants only those tools
+in an isolated test configuration; it does not change normal approval settings.
+See [MCP tool approval configuration](https://learn.chatgpt.com/docs/extend/mcp).
 
 `just test` includes process-level MCP tests for Codex binding, isolation,
 Claude/Codex and same-identity Codex/Codex messaging, and retry after local queue
@@ -154,8 +217,10 @@ localhost socket access; diagnostics go to `target/host-validation/`. On Codex
 trusted by supplying their exact current hashes
 as invocation-local config. The fixture waits for MCP readiness before submitting
 its prompt; it does not validate the first-prompt startup race. Lifecycle hooks bound a saved thread and an ephemeral thread to
-separate Interlink sessions. These fixture threads are not used for real queued
-delivery. The fixture also checks that both inbox tools
+separate Interlink sessions. The adapter's queue subprocess is recorded rather
+than routed to the shared daemon. A saved fixture thread separately receives a
+recorded notice through the host queue API to test Stop recovery. The fixture
+also checks that both inbox tools
 are exposed through the owning thread's MCP connection, sends a sibling message,
 and calls fetch and acknowledgement through Codex. Queue delivery is stubbed for
 these fixture threads. The fixture verifies registration without title fields or tools,
@@ -175,3 +240,8 @@ Relevant Codex contracts: [MCP tool hooks and trust review](https://learn.chatgp
 and the installed CLI's `codex queue --help`. New or changed non-managed hooks
 need review of their current definition in `/hooks`. Background hooks alone
 cannot start an idle turn, so the Claude `asyncRewake` listener is not used for Codex.
+
+For production-model coverage using the real local daemon and `codex queue`, run
+`just live-host-test` after installing its prerequisites. It also launches Claude
+and checks message exchange in both directions. This consumes account quota;
+see [live validation](../docs/DELIVERY.md#live-model-validation) for setup and limits.
