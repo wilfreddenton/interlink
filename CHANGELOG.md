@@ -5,6 +5,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-18
+
+### Fixed
+- Add a Codex Stop inbox guard: skipped fetch/acknowledgement gets one recovery
+  continuation, then a visible warning if messages remain unread. Track prompt
+  delivery separately so recovery preserves notifications still in the host queue.
+  Restart existing Codex chats and verify the new tool is available before
+  updating and trusting the sample prompt and Stop hooks.
+- Report the Interlink package name and version in the MCP handshake instead of
+  the underlying MCP library's identity. Add `interlink-mcp --version` for local
+  installation checks.
+
+### Added
+- Opt-in `just live-host-test` exercises real Codex queue and Claude Stop-hook
+  delivery with production models, isolated identities, and a local broker.
+
 ## [0.11.1] - 2026-10-05
 
 ### Fixed

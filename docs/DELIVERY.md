@@ -16,6 +16,18 @@ Fetching does not consume anything. After reading a response, call
 with its exact receipt objects. A lost fetch response remains unread. A stale
 notice always reads current state and never replays acknowledged bodies.
 
+The Codex sample also installs an end-of-turn inbox guard. Its prompt hook marks
+the current notice as started only when the incoming prompt exactly matches that
+notice. This persisted marker distinguishes a dequeued notice from one still
+waiting behind a busy turn. The Stop hook requests one fetch/acknowledgement
+continuation for unread non-progress messages. It supplies the notice ID only
+when prompt delivery was observed; otherwise it leaves the queued wake-up intact.
+It may retire a started notice with an empty inbox, but never acknowledges bodies.
+If a Stop hook already continued the turn, remaining unread work produces a UI
+warning instead of another continuation. No timer or extra queue submission is
+used. This requires the updated, trusted hooks and does not recover an idle
+thread whose notice was lost before prompt delivery, or restart interrupted work.
+
 An inbox notice requires a tool call even when it is the only event in an idle
 conversation. Silence applies only after an empty fetch or acknowledgement; it
 does not mean skipping the inbox check. If a turn ends without fetching and
@@ -251,3 +263,44 @@ The fixture does not cover the interactive hook-review UI, interactive Claude
 TUI, native-channel acceptance, or production-model behavior. See the
 [Codex validation notes](../codex/README.md#validation) for the separate queue wake
 smoke test and its limits.
+
+On Codex 0.163.0 the fixture also submits a recorded notice through the host's
+queue API to a provider that deliberately never fetches the inbox. It verifies
+one Stop continuation, a visible warning after that attempt, retained unread
+bodies, no duplicate notification, and a new notification after recovery. Unit
+tests cover pending versus started notices, restart persistence, manual
+consumption, and prompt/acceptance ordering.
+
+### Live model validation
+
+`just live-host-test` is a separate, opt-in check that makes real model calls and
+consumes account quota. Install the checkout with `cargo install --path . --locked`,
+and install `tests/host/requirements-live.txt` into the Python environment used by
+`python3`. Both CLIs must already be logged in. The test currently requires Unix
+sockets and a Codex `auth.json` login file. It uses the model and reasoning effort
+from the user's Codex configuration and Claude's default model.
+
+The test creates a private broker, fresh identity, local Claude plugin copy, and
+separate Codex home and shared daemon. It reviews the four binding hooks and trusts
+their current hashes only in that test home. Only the test's session lookup,
+discovery, send, fetch, and acknowledgement tools are preapproved. The Codex
+filesystem sandbox remains read-only. Normal host configuration, peer policy,
+and existing conversations are not changed.
+
+It checks idle wake-up through real `codex queue` and Claude's Stop listener,
+explicit message acknowledgement, six-message bursts to each host, and replies
+in both directions between the models. A controller manually fetches and
+acknowledges incoming messages without observing its queued notice; that notice
+must remain the only queued notice throughout the exchange. This exercises the
+notification backlog regression across actual model turns.
+
+The fixture suite and live checks passed on 2026-10-18 with Codex 0.163.0 and
+Claude Code 2.1.301. The live run used an installed development build containing
+the Stop guard and version-reporting changes, before its version was bumped from
+0.11.1 to 0.11.2.
+
+Diagnostics and a successful-run `summary.json` are saved under
+`target/host-validation/live/`. Test processes and the temporary Codex home are
+cleaned up on exit. The existing fixture tests remain useful for deterministic
+failure and restart coverage. This live check does not cover the interactive
+terminal UI, native Claude channels, or cross-machine network failures.

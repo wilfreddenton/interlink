@@ -56,10 +56,10 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.11.0 or newer:
+Install version 0.11.2 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.11.0 --locked
+cargo install interlink-mcp --version 0.11.2 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).
@@ -241,6 +241,13 @@ fixtures and writes diagnostics under `target/host-validation/`.
 The recorded host runs used Codex 0.160.0 and Claude Code 2.1.278. They cover trusted
 Codex lifecycle binding and Claude listener renewal, not production-model or
 interactive UI behavior. See [validation details](docs/DELIVERY.md#validation).
+
+For real model conversations, `just live-host-test` uses the installed Interlink
+binaries, logged-in Codex and Claude accounts, and Python dependencies from
+`tests/host/requirements-live.txt`. It consumes account quota. The test uses an
+isolated broker and identity, checks idle delivery and message bursts, and has
+Claude and Codex exchange replies. Logs go to `target/host-validation/live/`.
+See [live test setup and limits](docs/DELIVERY.md#live-model-validation).
 
 The existing terminal demo drives the binaries without a host session:
 
