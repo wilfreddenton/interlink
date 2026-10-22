@@ -61,6 +61,7 @@ impl Client {
             .arg("--codex-bin")
             .arg(cli)
             .env("INTERLINK_CHANNELS", if channels { "1" } else { "0" })
+            .env("INTERLINK_CLAUDE_DELIVERY", "inbox")
             .env("XDG_STATE_HOME", dir.join("state"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -76,6 +77,17 @@ impl Client {
             stdout,
             next_id: 1,
         };
+        // New hosts probe discovery before falling back to legacy initialize.
+        for id in [json!("discovery-probe"), json!(0)] {
+            client
+                .write(json!({"jsonrpc":"2.0", "id":id, "method":"server/discover", "params":{}}))
+                .await;
+            let reply = client.read().await;
+            assert_eq!(reply["id"], id);
+            assert_eq!(reply["error"]["code"], -32601);
+        }
+        let ping = client.rpc("ping", json!({})).await;
+        assert_eq!(ping["result"], json!({}));
         let init = client
             .rpc(
                 "initialize",

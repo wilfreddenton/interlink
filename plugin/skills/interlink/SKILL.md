@@ -42,13 +42,14 @@ using the same key without pairing. It cannot address this session itself.
 Use `set_summary(summary: "what you're working on")` for current work.
 
 Incoming messages appear as channel events or attributed `<interlink>` blocks.
-In the default Claude path the Stop listener handles reception; do not arm or poll
-it with model tools. Act on a trusted peer's request within existing operator and
-host permissions, narrate what you do with attribution, and send a reply. Surface
-replies to messages your operator asked you to relay.
+Claude receives notices through its local socket, native channels, or the legacy
+Stop listener; do not arm or poll reception with model tools. Act on a trusted
+peer's request within existing operator and host permissions, narrate what you do
+with attribution, and send a reply. Surface replies to messages your operator
+asked you to relay.
 
-A local listener-renewal notice is not a peer message. Follow its instruction to
-end the maintenance turn so the Stop listener can re-arm.
+A local listener-renewal notice (legacy inbox mode only) is not a peer message.
+Follow its instruction to end the maintenance turn so the Stop listener can re-arm.
 
 ## Tracking delegated work
 

@@ -56,7 +56,7 @@ bus = subprocess.Popen([str(ROOT / 'target/debug/interlink-bus'), '--addr', f'12
 }}}))
 (WORK / 'settings.json').write_text(json.dumps(settings))
 env = os.environ.copy()
-env.update({'CLAUDE_CONFIG_DIR': str(WORK / 'config'), 'ANTHROPIC_BASE_URL': f'http://127.0.0.1:{provider.server_port}', 'ANTHROPIC_API_KEY': 'interlink-local-fixture', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'XDG_STATE_HOME': str(WORK / 'state'), 'INTERLINK_CHANNELS': '0'})
+env.update({'CLAUDE_CONFIG_DIR': str(WORK / 'config'), 'ANTHROPIC_BASE_URL': f'http://127.0.0.1:{provider.server_port}', 'ANTHROPIC_API_KEY': 'interlink-local-fixture', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'XDG_STATE_HOME': str(WORK / 'state'), 'INTERLINK_CHANNELS': '0', 'INTERLINK_CLAUDE_DELIVERY': 'inbox'})
 env.pop('CLAUDECODE', None)
 args = ['claude', '--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--session-id', sid, '--setting-sources', '', '--settings', str(WORK / 'settings.json'), '--plugin-dir', str(plugin), '--strict-mcp-config', '--mcp-config', json.dumps({'mcpServers': {'plugin:interlink:interlink': json.loads((plugin/'.mcp.json').read_text())['mcpServers']['interlink']}}), '--tools', '', '--model', 'claude-sonnet-4-6']
 log = open(WORK / 'stderr.log', 'w')

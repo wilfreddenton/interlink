@@ -31,7 +31,7 @@ the first turn remains a tracked improvement; see the
 
 A restart within the same host session can recover its address. A genuinely new
 session has a new ID; old queued messages are not automatically migrated to it.
-In Claude's default delivery mode, the MCP server and Stop listener must also
+In Claude's legacy inbox delivery mode, the MCP server and Stop listener must also
 use the same ID and local state directory. See [delivery](DELIVERY.md).
 
 ## Addressing

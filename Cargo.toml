@@ -1,6 +1,6 @@
 [package]
 name = "interlink-mcp"
-version = "0.11.2"
+version = "0.12.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/wilfreddenton/interlink"
@@ -78,10 +78,6 @@ required-features = ["identity"]
 name = "interlink-mcp"
 path = "src/bin/interlink-mcp.rs"
 required-features = ["agent"]
-
-[[bin]]
-name = "interlinked"
-path = "src/bin/interlinked.rs"
 
 [profile.release]
 lto = "fat"

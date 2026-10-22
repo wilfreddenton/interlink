@@ -5,6 +5,29 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-22
+
+### Removed
+- Remove the optional `interlinked` Claude launcher from builds and release
+  archives. Launch `claude` directly for socket delivery. Native channels remain
+  available through explicit environment and CLI settings.
+
+### Fixed
+- Accept a pre-initialization `server/discover` probe with a method-not-found
+  response so newer Claude hosts can fall back to the normal MCP handshake.
+- Prefer Claude's authenticated local messaging socket when available, eliminating
+  Stop-listener maintenance turns while idle. Keep the legacy inbox listener for
+  hosts without a socket, with `INTERLINK_CLAUDE_DELIVERY=inbox` as an explicit
+  override. Update both the MCP server and listener binary, then restart Claude.
+- Reissue pending unobserved legacy inbox notices when switching to the socket,
+  preserving unread bodies and existing acknowledgement semantics.
+
+### Added
+- A Claude 2.1.308 host fixture covers socket wake-up, real MCP fetch/acknowledgement,
+  inbound refusal, and disabled listener renewal using local model responses.
+- Live Claude/Codex validation uses checkout binaries, waits for idle hosts before
+  wake-up checks, and verifies socket delivery stays quiet after real-model exchanges.
+
 ## [0.11.2] - 2026-10-18
 
 ### Fixed

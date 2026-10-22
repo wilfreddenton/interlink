@@ -77,7 +77,7 @@ jobs:
           stage="interlink-$target"
           mkdir "$stage"
           cp "$bindir/interlink-mcp$ext" "$bindir/interlink-bus$ext" \
-             "$bindir/interlink-keygen$ext" "$bindir/interlinked$ext" "$stage/"
+             "$bindir/interlink-keygen$ext" "$stage/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a "$stage.zip" "$stage" >/dev/null
             echo "archive=$stage.zip" >> "$GITHUB_OUTPUT"

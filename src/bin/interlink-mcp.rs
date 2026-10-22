@@ -1,8 +1,8 @@
 //! `interlink-mcp`: the per-agent channel server.
 //!
-//! Claude Code spawns this over stdio. By default it delivers inbound to a local
-//! inbox drained by the `wait` Stop-hook listener (plain `claude`); when the operator
-//! opts into channels (`INTERLINK_CHANNELS=1`, via the `interlinked` launcher), it
+//! Claude Code spawns this over stdio. It uses the host's local messaging socket
+//! when available, otherwise a local inbox drained by the `wait` Stop hook. When the operator
+//! opts into channels (`INTERLINK_CHANNELS=1` and Claude's channel flag), it
 //! instead pushes `notifications/claude/channel` events into the session.
 //! It long-polls the bus for messages addressed to this agent's key, runs each
 //! through the inbound gate ([`interlink::agent::decide`]), and pushes the ones
@@ -25,6 +25,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
 use interlink::agent::{Dedupe, Dispatch, decide};
+use interlink::claude::ClaudeSocket;
 use interlink::codex::{deliver as deliver_codex, validate_thread_id};
 use interlink::delivery::FailedDeliveries;
 use interlink::identity::{
@@ -41,6 +42,7 @@ use interlink::store::{Dir, LogRecord, Store};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::transport::stdio;
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
@@ -52,6 +54,10 @@ use tokio::task::JoinSet;
 #[path = "mcp/delivery.rs"]
 mod delivery;
 use delivery::{Sink, render_inbox_line};
+
+#[path = "mcp/transport.rs"]
+mod transport;
+use transport::LegacyDiscovery;
 
 const DEDUPE_CAP: usize = 4096;
 /// The reserved queue name for this agent's outbound messages. Can't collide
@@ -80,10 +86,8 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Channel-less receiver (the default; no channels needed): block until a message
-    /// lands in this session's local inbox, print it, and exit 2 to wake the model.
-    /// Run by the async Stop hook, which fires again each turn — so a plain-`claude`
-    /// session is still woken by incoming messages, with no arming by the model.
+    /// Legacy inbox listener. Exits immediately when socket or channel delivery
+    /// is selected, so the installed Stop hook does not renew an unused listener.
     Wait(WaitArgs),
 }
 
@@ -800,7 +804,7 @@ impl Agent {
     }
 
     #[tool(
-        description = "Check a local message state by msg_id. Outbound: pending or bus_accepted (receiver status unknown). Inbound: receiver_stored, inbox_queued, notification_sent, host_queued, delivery_failed, or receiver_acknowledged. A host handoff never proves the agent read or completed a message."
+        description = "Check a local message state by msg_id. Outbound: pending or bus_accepted (receiver status unknown). Inbound: receiver_stored, inbox_queued, notification_sent, socket_sent, host_queued, delivery_failed, or receiver_acknowledged. A host handoff never proves the agent read or completed a message."
     )]
     async fn message_status(
         &self,
@@ -2042,6 +2046,20 @@ async fn notification_loop(inner: Arc<Inner>, sink: Arc<Sink>) {
         }
         backoff().await;
     };
+    if matches!(sink.as_ref(), Sink::Socket(_)) {
+        loop {
+            match inner
+                .mailbox()
+                .and_then(|mailbox| mailbox.retry_legacy_inbox_notice())
+            {
+                Ok(()) => break,
+                Err(error) => {
+                    tracing::warn!("migrating pending inbox notice: {error}");
+                    backoff().await;
+                }
+            }
+        }
+    }
     loop {
         match inner.mailbox().and_then(|mailbox| mailbox.reserve_notice()) {
             Ok(Some(notice)) => {
@@ -2053,6 +2071,7 @@ async fn notification_loop(inner: Arc<Inner>, sink: Arc<Sink>) {
                         Sink::Codex(_) => "host_queued",
                         Sink::Inbox(_) => "inbox_queued",
                         Sink::Channel(_) => "notification_sent",
+                        Sink::Socket(_) => "socket_sent",
                     }
                 };
                 // Retry persistence alone after a host handoff, never repeat it
@@ -2349,8 +2368,7 @@ async fn poll_once(http: &reqwest::Client, url: &str, me_b64: &str) -> Result<se
 }
 
 /// True when the operator opted into native Claude Code channels
-/// (`INTERLINK_CHANNELS=1`, set by the `interlinked` launcher). The default is the
-/// channel-less mode, which works everywhere with plain `claude`.
+/// (`INTERLINK_CHANNELS=1`).
 fn channel_mode() -> bool {
     std::env::var("INTERLINK_CHANNELS")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -2358,7 +2376,7 @@ fn channel_mode() -> bool {
 }
 
 /// The local inbox queue where the server writes verified messages for the `wait`
-/// receiver to drain (the default channel-less mode).
+/// receiver to drain in legacy inbox mode.
 fn inbox_path(session: &str) -> Option<PathBuf> {
     Some(
         progress_dir()?
@@ -2388,7 +2406,7 @@ fn resolve_session_id(configured: Option<&str>, native: Option<&str>) -> Option<
 }
 
 async fn run_wait(w: &WaitArgs) -> Result<()> {
-    if channel_mode() {
+    if channel_mode() || ClaudeSocket::from_env()?.is_some() {
         return Ok(());
     }
     let session = wait_session(w);
@@ -2466,6 +2484,11 @@ async fn main() -> Result<()> {
         None => {}
     }
     let args = cli.args;
+    let claude_socket = if args.host == Host::Claude && !channel_mode() {
+        ClaudeSocket::from_env()?
+    } else {
+        None
+    };
     let key_path = args
         .key
         .clone()
@@ -2565,7 +2588,12 @@ async fn main() -> Result<()> {
         inner: inner.clone(),
         tool_router: Agent::tool_router(),
     };
-    let service = agent.serve(stdio()).await?;
+    let (input, output) = stdio();
+    let service = agent
+        .serve(LegacyDiscovery::new(AsyncRwTransport::new_server(
+            input, output,
+        )))
+        .await?;
 
     // Single background sender draining the durable outbox (retries on bus-down).
     let mut workers = JoinSet::new();
@@ -2574,13 +2602,14 @@ async fn main() -> Result<()> {
     // Heartbeat this node's presence to the roster for discovery.
     workers.spawn(announce_loop(inner.clone()));
 
-    // Delivery: a native channel push when the operator opted in, else the local
-    // inbox queue drained by `wait`, preserved across server restarts.
     let sink = if inner.codex.is_some() {
         tracing::info!("Codex mode: waiting for the local binding hook");
         Arc::new(Sink::Codex(inner.clone()))
     } else if channel_mode() {
         Arc::new(Sink::Channel(Box::new(service.peer().clone())))
+    } else if let Some(socket) = claude_socket {
+        tracing::info!("delivering through the owning Claude session's local socket");
+        Arc::new(Sink::Socket(socket))
     } else {
         if let Some(path) = inbox_path(&inner.session.read().unwrap().session_id) {
             Inbox::open(&path)?;

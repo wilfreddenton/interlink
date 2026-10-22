@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use interlink::claude::ClaudeSocket;
 use interlink::codex::{DeliveryError, deliver as deliver_codex};
 use interlink::inbox::Inbox;
 use interlink::mailbox::Notice;
@@ -14,12 +15,11 @@ use serde_json::{Value, json};
 
 use super::{Inner, backoff, inbox_path};
 
-/// Host handoff for a verified message: Claude channel, durable Claude inbox,
-/// or the queue for the bound Codex thread.
 pub(super) enum Sink {
     Channel(Box<Peer<RoleServer>>),
     Inbox(Arc<Inner>),
     Codex(Arc<Inner>),
+    Socket(ClaudeSocket),
 }
 
 impl Sink {
@@ -139,6 +139,13 @@ impl Sink {
         in_reply_to: Option<&str>,
     ) -> Result<()> {
         match self {
+            Sink::Socket(socket) => {
+                let mut record = meta_map(sender, msg_id, task_id, status, in_reply_to);
+                record.insert("content".into(), json!(content));
+                socket
+                    .deliver(&render_inbox_line(&Value::Object(record).to_string()))
+                    .await
+            }
             Sink::Channel(peer) => {
                 push(peer, content, sender, msg_id, task_id, status, in_reply_to).await
             }

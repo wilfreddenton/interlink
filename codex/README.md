@@ -12,10 +12,10 @@ adapter uses `codex queue`; `--no-daemon`, remote app servers, and the desktop a
 are not supported by this adapter. Ephemeral (`codex exec --ephemeral`) threads
 cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.11.2 or newer:
+Install Interlink 0.12.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.11.2 --locked
+cargo install interlink-mcp --version 0.12.0 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`

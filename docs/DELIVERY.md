@@ -7,7 +7,7 @@ have their own handler and generate pairing notices. See [the trust model](../DE
 ## Shared inbox and consumption
 
 Verified peer messages are saved to `mailbox/<identity>/<session>.json` before
-the broker is acknowledged. This shared path serves Claude's Stop listener,
+the broker is acknowledged. This shared path serves Claude's local socket, Stop listener,
 Claude channels, and Codex. A host receives a small inbox notice containing a
 `notification_id`, rather than a copy of each message body. The agent calls
 `receive_messages(notification_id="...")` to fetch current unread messages.
@@ -95,6 +95,7 @@ Use distinct task IDs for new work. The sender session is the existing unsigned
 | `receiver_stored` | Verified body is committed to the receiving session's mailbox |
 | `inbox_queued` | A notice was appended to Claude's local Stop-listener inbox |
 | `notification_sent` | A notice was written to Claude's MCP channel |
+| `socket_sent` | A notice was written to Claude's local socket; this does not prove host acceptance or reading |
 | `host_queued` | Codex accepted the notice into its queue |
 | `delivery_failed` | A host notice failed; bodies remain in the shared mailbox |
 | `receiver_acknowledged` | The receiver explicitly acknowledged the message, or consumed it through history |
@@ -110,7 +111,51 @@ fetch. Acknowledged bodies are excluded from subsequent unread fetches, while
 history remains available. Existing pre-upgrade notices containing full bodies
 cannot be retracted. Pairing control notices retain their separate path.
 
-## Claude default: inbox and Stop listener
+## Claude default: local messaging socket
+
+Interlink 0.12.0 prefers the local inbox socket supplied by Claude as
+`CLAUDE_CODE_MESSAGING_SOCKET`, authenticating with the owning session's
+`CLAUDE_CODE_MESSAGING_TOKEN`. Both are supplied to the MCP process on the tested
+Claude Code 2.1.308 host. Interlink opens a fresh connection for each notification,
+sends a JSONL auth frame followed by a user-message frame containing an attributed
+Interlink notice, and closes its write side. The combined connect/write/shutdown
+operation has a three-second timeout. Unix uses a domain socket; Windows uses a
+local named pipe. The Windows path has not been host-validated.
+
+The Interlink broker remains independently configurable with `INTERLINK_URL`,
+including a broker on a trusted private network. Only delivery from the local
+MCP process into Claude uses the socket.
+
+`INTERLINK_CLAUDE_DELIVERY` selects `auto`, `socket`, or `inbox`. Auto uses the
+socket when its path is present, otherwise the legacy listener. A socket path
+without the host token is an error. Explicit socket mode requires both. Set the
+mode before launching Claude so the server and Stop hook receive the same value.
+Explicit `INTERLINK_CHANNELS=1` takes precedence and retains native channels.
+
+In socket mode, `interlink-mcp wait` exits successfully immediately, without
+reading the inbox or scheduling renewal. Claude therefore has no Interlink
+maintenance turns while idle. Connection failures use the existing mailbox retry
+and backoff; they never enable the Stop listener as a fallback.
+
+The socket does not provide an acceptance receipt. A successful write is recorded
+as `socket_sent` and coalesces further notices until a matching inbox fetch.
+Claude can hold or refuse that notice according to its
+[inbound controls](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages).
+A completed socket write must never be interpreted as model delivery. Messages
+remain unread in Interlink until explicitly acknowledged. If Claude refuses or
+loses a notice, repair the host configuration, then use
+`receive_messages(reset_notification=true)` and acknowledge the returned bodies.
+This adapter does not change Claude's inbound policy.
+
+For an upgrade from the Stop listener, update both the server and listener binary
+and restart Claude. Under the notifier lock, socket mode reissues any unobserved
+`inbox_queued` notice; its bodies stay unread. Already fetched notices and
+`socket_sent` notices survive MCP restarts without a new wake-up. An old listener
+still running can produce one obsolete notice, whose ID cannot retire a newer
+notification. Manually changing between other delivery modes may require explicit
+notification recovery. Socket support requires Interlink 0.12.0 or newer.
+
+## Claude legacy: inbox and Stop listener
 
 The Claude plugin registers an async Stop hook:
 
@@ -198,10 +243,16 @@ removing a live session's data or cursor while either writer or listener is runn
 
 ## Claude native channels
 
-`interlinked` sets `INTERLINK_CHANNELS=1` and starts Claude with
-`--dangerously-load-development-channels plugin:interlink@interlink`. The plugin
-forwards the env switch to the MCP server; the listener self-disables in channel
-mode. The server cannot infer whether the host actually enabled channels.
+For an installed marketplace plugin, opt into channels explicitly:
+
+```bash
+INTERLINK_CHANNELS=1 claude --dangerously-load-development-channels plugin:interlink@interlink
+```
+
+The plugin forwards the env switch to the MCP server; the listener self-disables
+in channel mode. This plugin identifier applies to the marketplace install, not
+the local `--plugin-dir` path. The server cannot infer whether the host actually
+enabled channels.
 
 This path requires a compatible Claude channel implementation and any applicable
 organization settings. Development flags do not override a disabled channel
@@ -242,7 +293,9 @@ Codex binding, retry limits, saved failures, and cross-host delivery. Shared
 regressions cover busy-host reads and history consumption without accumulating
 wake-ups, restart deduplication, failed-handoff expiry, stale IDs, explicit notice
 recovery, partial batches, lost fetch responses, acknowledgement, progress
-coalescing, and storage failures across all three adapters. Process integration
+coalescing, and storage failures. Socket tests cover authenticated framing,
+connection failure, fresh connections after socket replacement, and migration
+from a pending legacy inbox notice. Process integration
 tests use local brokers and a recording queue executable.
 
 `just host-test` requires Python 3.11+, installed `codex` and `claude` CLIs, and
@@ -259,6 +312,19 @@ Code 2.1.278 with local response fixtures, not production models:
   Stop re-arming, and a later fixture message causing another turn. The MCP server
   registers the session without title hooks.
 
+The socket fixture uses Claude 2.1.308 and the real Interlink binaries without a
+compatibility shim. It verifies broker-to-socket delivery, MCP fetch and
+acknowledgement, refusal without consumption, and an accelerated Stop hook that
+stays disabled in socket mode. Model responses come from a local fixture, and the
+broker runs in a separate process on the same machine. It does not validate an
+overnight idle interval, cross-machine networking, or Windows named pipes.
+
+Newer Claude hosts can send `server/discover` before MCP initialization. Interlink
+returns JSON-RPC method-not-found for that probe and keeps the transport open for
+the standard `initialize` handshake. It does not claim support for the newer
+discovery protocol. Process tests exercise repeated probes with string and
+numeric IDs, a pre-initialization ping, and subsequent tool calls.
+
 The fixture does not cover the interactive hook-review UI, interactive Claude
 TUI, native-channel acceptance, or production-model behavior. See the
 [Codex validation notes](../codex/README.md#validation) for the separate queue wake
@@ -274,8 +340,8 @@ consumption, and prompt/acceptance ordering.
 ### Live model validation
 
 `just live-host-test` is a separate, opt-in check that makes real model calls and
-consumes account quota. Install the checkout with `cargo install --path . --locked`,
-and install `tests/host/requirements-live.txt` into the Python environment used by
+consumes account quota. It builds and uses this checkout's binaries. Install
+`tests/host/requirements-live.txt` into the Python environment used by
 `python3`. Both CLIs must already be logged in. The test currently requires Unix
 sockets and a Codex `auth.json` login file. It uses the model and reasoning effort
 from the user's Codex configuration and Claude's default model.
@@ -287,17 +353,29 @@ discovery, send, fetch, and acknowledgement tools are preapproved. The Codex
 filesystem sandbox remains read-only. Normal host configuration, peer policy,
 and existing conversations are not changed.
 
-It checks idle wake-up through real `codex queue` and Claude's Stop listener,
+It waits for the initial turns to finish, then checks idle wake-up through real
+`codex queue` and Claude's local messaging socket,
 explicit message acknowledgement, six-message bursts to each host, and replies
 in both directions between the models. A controller manually fetches and
 acknowledges incoming messages without observing its queued notice; that notice
 must remain the only queued notice throughout the exchange. This exercises the
-notification backlog regression across actual model turns.
+notification backlog regression across actual model turns. After the exchange,
+Claude must remain quiet for ten seconds despite a one-second legacy listener
+renewal setting. Hook lifecycle events do not count as model turns.
 
 The fixture suite and live checks passed on 2026-10-18 with Codex 0.163.0 and
 Claude Code 2.1.301. The live run used an installed development build containing
 the Stop guard and version-reporting changes, before its version was bumped from
 0.11.1 to 0.11.2.
+
+On 2026-10-22, live checks passed with Codex 0.163.0 and Claude Code 2.1.308
+using this checkout's socket-delivery build (still reporting version 0.11.2).
+Both hosts were idle before their wake-up messages, fetched and acknowledged
+all six burst messages each, and completed a round trip in each direction.
+Claude remained quiet for ten seconds with a one-second legacy renewal setting,
+and no legacy inbox was created for its session. These were production-model
+calls through the local broker, not simulated model responses. This does not
+establish overnight idle behavior or remote-broker connectivity.
 
 Diagnostics and a successful-run `summary.json` are saved under
 `target/host-validation/live/`. Test processes and the temporary Codex home are
