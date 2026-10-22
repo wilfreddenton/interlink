@@ -19,8 +19,11 @@ All notable changes to this project are documented here. The format is based on
   Stop-listener maintenance turns while idle. Keep the legacy inbox listener for
   hosts without a socket, with `INTERLINK_CLAUDE_DELIVERY=inbox` as an explicit
   override. Update both the MCP server and listener binary, then restart Claude.
-- Reissue pending unobserved legacy inbox notices when switching to the socket,
-  preserving unread bodies and existing acknowledgement semantics.
+- Forward pending legacy inbox records, including pairing requests and
+  acceptance/conflict notices, when switching to the socket. Preserve ordinary
+  wake-up IDs and unread bodies without replaying committed records.
+- Persist socket pairing notices before broker acknowledgement and deliver them
+  in the background, so an unavailable socket cannot block ordinary broker intake.
 
 ### Added
 - A Claude 2.1.308 host fixture covers socket wake-up, real MCP fetch/acknowledgement,

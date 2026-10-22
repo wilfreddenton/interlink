@@ -147,9 +147,21 @@ loses a notice, repair the host configuration, then use
 `receive_messages(reset_notification=true)` and acknowledge the returned bodies.
 This adapter does not change Claude's inbound policy.
 
+Pairing control notices are committed to the local inbox before broker
+acknowledgement. The background notifier forwards them through the socket one
+record at a time, independently of broker intake. A socket failure leaves these
+notices queued while ordinary messages continue into the mailbox. Successful
+handoffs advance the durable inbox cursor; a cursor-write failure retries storage
+without repeating the socket write. A crash between handoff and cursor commit can
+still replay a control notice, because the socket has no acceptance receipt.
+
 For an upgrade from the Stop listener, update both the server and listener binary
-and restart Claude. Under the notifier lock, socket mode reissues any unobserved
-`inbox_queued` notice; its bodies stay unread. Already fetched notices and
+and restart Claude. Under the notifier and inbox-listener locks, socket mode
+forwards unread legacy records, including pairing requests and acceptance/conflict
+notices. An ordinary mailbox wake-up keeps its original notification ID and is
+marked `socket_sent` before its inbox cursor advances. After draining those
+records, any still-unobserved `inbox_queued` notice already consumed by the old
+listener is reissued; its bodies stay unread. Already fetched notices and
 `socket_sent` notices survive MCP restarts without a new wake-up. An old listener
 still running can produce one obsolete notice, whose ID cannot retire a newer
 notification. Manually changing between other delivery modes may require explicit
@@ -324,6 +336,11 @@ returns JSON-RPC method-not-found for that probe and keeps the transport open fo
 the standard `initialize` handshake. It does not claim support for the newer
 discovery protocol. Process tests exercise repeated probes with string and
 numeric IDs, a pre-initialization ping, and subsequent tool calls.
+
+Socket process tests also cover migration of pending pairing requests and
+acceptance/conflict notices, retention of the original ordinary wake-up ID,
+continued broker intake while the socket is unavailable, and queued control
+delivery after restart without replaying committed records.
 
 The fixture does not cover the interactive hook-review UI, interactive Claude
 TUI, native-channel acceptance, or production-model behavior. See the

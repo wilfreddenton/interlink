@@ -78,9 +78,10 @@ Claude's inbound-message settings still apply.
 
 When upgrading from 0.11.2 or earlier, update the plugin and ensure both the
 server and Stop hook use the new `interlink-mcp`, then restart Claude to stop any
-old listener. Pending unobserved legacy inbox notices are reissued through the
-socket without consuming their messages. Do not mix new server and old listener
-binaries. The `interlinked` launcher has been removed; launch `claude` directly.
+old listener. Pending legacy inbox records, including pairing notices, are
+forwarded through the socket without consuming ordinary message bodies. Do not
+mix new server and old listener binaries. The `interlinked` launcher has been
+removed; launch `claude` directly.
 
 `INTERLINK_CLAUDE_DELIVERY` selects `auto` (the default), `socket` (require the
 host's socket and token), or `inbox` (force the legacy Stop listener). Set it in

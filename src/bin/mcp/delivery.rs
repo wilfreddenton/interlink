@@ -1,13 +1,14 @@
 //! Host delivery adapters and attributed message rendering.
 
-use std::path::Path;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use interlink::claude::ClaudeSocket;
 use interlink::codex::{DeliveryError, deliver as deliver_codex};
 use interlink::inbox::Inbox;
-use interlink::mailbox::Notice;
+use interlink::mailbox::{Mailbox, Notice};
 use rmcp::RoleServer;
 use rmcp::model::{CustomNotification, ServerNotification};
 use rmcp::service::Peer;
@@ -19,7 +20,69 @@ pub(super) enum Sink {
     Channel(Box<Peer<RoleServer>>),
     Inbox(Arc<Inner>),
     Codex(Arc<Inner>),
-    Socket(ClaudeSocket),
+    Socket {
+        socket: ClaudeSocket,
+        inbox: PathBuf,
+    },
+}
+
+pub(super) struct SocketInbox {
+    path: PathBuf,
+    reader: Option<(Inbox, File)>,
+    migrated: bool,
+}
+
+impl SocketInbox {
+    pub(super) fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            reader: None,
+            migrated: false,
+        }
+    }
+
+    pub(super) async fn poll(&mut self, socket: &ClaudeSocket, mailbox: &Mailbox) -> Result<()> {
+        if self.reader.is_none() && self.path.try_exists()? {
+            let inbox = Inbox::open(&self.path)?;
+            if let Some(lock) = inbox.listener_lock()? {
+                self.reader = Some((inbox, lock));
+            } else {
+                return Ok(());
+            }
+        }
+        if let Some((inbox, _lock)) = &self.reader {
+            let batch = inbox.read_one()?;
+            if let Some(line) = batch.lines.first() {
+                socket.deliver(&render_inbox_line(line)).await?;
+                let record = serde_json::from_str::<Value>(line).ok();
+                // A legacy mailbox wake-up keeps its ID when forwarded. Mark it
+                // sent before allowing migration to reissue any consumed notice.
+                // Retry storage alone after handoff, never resend on a cursor error.
+                loop {
+                    let result = (|| -> Result<()> {
+                        if let Some(id) = record.as_ref().and_then(|v| v["msg_id"].as_str()) {
+                            mailbox.finish_notice(id, "socket_sent")?;
+                        }
+                        inbox.commit(&batch)
+                    })();
+                    match result {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            tracing::warn!("recording socket inbox handoff: {error}");
+                            backoff().await;
+                        }
+                    }
+                }
+            }
+        }
+        if !self.migrated {
+            // Only reissue a legacy wake-up after all unread records have been
+            // forwarded. Otherwise it would race the same notice still in the inbox.
+            mailbox.retry_legacy_inbox_notice()?;
+            self.migrated = true;
+        }
+        Ok(())
+    }
 }
 
 impl Sink {
@@ -69,7 +132,7 @@ impl Sink {
         false
     }
 
-    pub(super) async fn deliver(
+    pub(super) async fn deliver_control(
         &self,
         content: &str,
         sender: &str,
@@ -105,10 +168,15 @@ impl Sink {
                 }
             } else {
                 attempts += 1;
-                match self
-                    .try_deliver(content, sender, msg_id, task_id, status, in_reply_to)
-                    .await
-                {
+                let result = if let Sink::Socket { inbox, .. } = self {
+                    // Broker intake depends on local persistence, not on Claude
+                    // accepting a control notice. The notifier drains this queue.
+                    append_inbox(inbox, content, sender, msg_id, task_id, status, in_reply_to)
+                } else {
+                    self.try_deliver(content, sender, msg_id, task_id, status, in_reply_to)
+                        .await
+                };
+                match result {
                     Ok(()) => return true,
                     Err(e) => {
                         if attempts == 1 {
@@ -139,7 +207,7 @@ impl Sink {
         in_reply_to: Option<&str>,
     ) -> Result<()> {
         match self {
-            Sink::Socket(socket) => {
+            Sink::Socket { socket, .. } => {
                 let mut record = meta_map(sender, msg_id, task_id, status, in_reply_to);
                 record.insert("content".into(), json!(content));
                 socket
