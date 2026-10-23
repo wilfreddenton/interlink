@@ -47,7 +47,9 @@ host-test:
     cargo build --all-features --bins
     python3 tests/host/codex.py
     python3 tests/host/claude.py
+    python3 tests/host/claude_socket.py
 
-# Opt in to real model calls using installed binaries and existing CLI logins.
+# Opt in to real model calls using the checkout and existing CLI logins.
 live-host-test:
+    cargo build --all-features --bins
     python3 tests/host/live.py

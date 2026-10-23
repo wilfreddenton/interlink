@@ -12,10 +12,10 @@ adapter uses `codex queue`; `--no-daemon`, remote app servers, and the desktop a
 are not supported by this adapter. Ephemeral (`codex exec --ephemeral`) threads
 cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.11.2 or newer:
+Install Interlink 0.12.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.11.2 --locked
+cargo install interlink-mcp --version 0.12.0 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`
@@ -76,8 +76,11 @@ Use `get_my_session_id()` for your own ID without a broker lookup, after binding
 Version 0.11.0 removes session titles and their metadata reader.
 See [upgrade notes](../docs/SESSIONS.md#upgrading-from-session-titles).
 
-Ask Codex to set a summary (for example, "Codex: working on the API") and run
-`discover`. From a paired Claude or Codex session, send it a message using the
+The binding hooks supply one reminder to set a useful work summary. Codex decides
+when to set or revise it; updates are not required every turn. Update the sample
+hooks and review them in `/hooks` to enable this guidance.
+
+Run `discover`. From a paired Claude or Codex session, send it a message using the
 session ID shown there. An inbox notice should prompt a `receive_messages` call returning the attributed peer message.
 
 ## Delivery and trust

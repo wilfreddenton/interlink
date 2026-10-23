@@ -2,12 +2,17 @@
   "mcpServers": {
     "interlink": {
       "command": "npx",
-      "args": ["-y", "interlink-mcp"],
+      "args": [
+        "-y",
+        "interlink-mcp"
+      ],
       "env": {
         "INTERLINK_KEY": "${HOME}/.config/interlink/id.key",
         "INTERLINK_PEERS": "${HOME}/.config/interlink/peers.json",
         "INTERLINK_URL": "${INTERLINK_URL:-http://127.0.0.1:9440}",
-        "INTERLINK_CHANNELS": "${INTERLINK_CHANNELS:-0}"
+        "INTERLINK_CHANNELS": "${INTERLINK_CHANNELS:-0}",
+        "INTERLINK_CLAUDE_DELIVERY": "${INTERLINK_CLAUDE_DELIVERY:-auto}",
+        "INTERLINK_CLAUDE_SESSION_HOOKS": "true"
       }
     }
   }

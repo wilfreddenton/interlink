@@ -13,7 +13,7 @@ claude plugin install interlink@interlink
 ```
 
 The plugin invokes `npx -y interlink-mcp` for both the server and listener. Use
-version 0.11.1 or newer for the notification backlog fix and explicit recovery. If upgrading,
+version 0.12.0 or newer for socket delivery without idle renewal turns. If upgrading,
 update the installed plugin and restart Claude so it reloads the server and hooks.
 The local instructions below are for testing development changes.
 Version 0.11.0 removes title support; update the binary and plugin together
@@ -57,7 +57,7 @@ printf '{}\n' > ~/.config/interlink/peers.json
 interlink-bus --db ~/.local/state/interlink/bus.redb
 ```
 
-The npm package supplies only the MCP binary. Get keygen, broker, and launcher
+The npm package supplies only the MCP binary. Get keygen and broker
 from the source install or a full release archive. Run one broker for the mesh;
 set `INTERLINK_URL` before starting Claude if it is remote.
 
@@ -69,12 +69,38 @@ passed by the plugin. The shell examples above use POSIX syntax.
 
 ## Delivery and hooks
 
-Launch plain `claude` after setup. The default listener needs hooks and MCP to be
-allowed, but does not require the Claude channel feature. Use a Claude version
-that provides `CLAUDE_CODE_SESSION_ID` to MCP and supports `asyncRewake`; the host
-fixture was validated on 2.1.278.
+Launch plain `claude` after setup. In Interlink 0.12.0, the MCP server
+uses the owning session's `CLAUDE_CODE_MESSAGING_SOCKET` and
+`CLAUDE_CODE_MESSAGING_TOKEN` when available. The Stop hook then exits immediately,
+without a model turn or renewal timer. This path was validated on Claude 2.1.308.
+The socket is local to Claude; the Interlink broker can remain on another machine.
+Claude's inbound-message settings still apply.
 
-- `Stop`: runs `interlink-mcp wait` asynchronously. Verified messages are drained
+When upgrading from 0.11.2 or earlier, update the plugin and ensure both the
+server and Stop hook use the new `interlink-mcp`, then restart Claude to stop any
+old listener. Pending legacy inbox records, including pairing notices, are
+forwarded through the socket without consuming ordinary message bodies. Do not
+mix new server and old listener binaries. The `interlinked` launcher has been
+removed; launch `claude` directly.
+
+`INTERLINK_CLAUDE_DELIVERY` selects `auto` (the default), `socket` (require the
+host's socket and token), or `inbox` (force the legacy Stop listener). Set it in
+the environment before launching Claude so the MCP server and hook agree. Socket
+errors never silently fall back to the Stop listener. See
+[delivery and recovery](../docs/DELIVERY.md#claude-default-local-messaging-socket).
+
+Hosts without a socket retain the legacy listener. They need
+`CLAUDE_CODE_SESSION_ID` and `asyncRewake`; neither path requires the Claude
+channel feature. MCP and hooks must be allowed by the host configuration.
+
+- `SessionStart`, `UserPromptSubmit`, and `PreToolUse`: bind Interlink to the
+  current Claude conversation. Send an initial prompt after launch; Claude skips
+  MCP-tool SessionStart hooks at startup. `/clear` then binds a fresh mailbox and
+  `/resume` reopens the resumed conversation's mailbox. Update these hooks with
+  the binary. Socket delivery remains inactive until binding succeeds.
+- `SessionEnd`: stop the old conversation's workers and retain its mailbox.
+- `Stop`: runs `interlink-mcp wait` asynchronously, exiting immediately in socket
+  or native-channel mode. In legacy inbox mode, verified messages are drained
   from the durable local inbox; exit 2 wakes the host. An OS file lock limits the
   listener to one process per session. After 50 idle minutes it requests a brief
   maintenance turn to renew before the one-hour hook timeout.
@@ -83,11 +109,10 @@ fixture was validated on 2.1.278.
   `INTERLINK_PROGRESS_INTERVAL` in the host environment (default 60 seconds;
   zero disables). It is a reminder, not a guaranteed progress sender.
 
-For an installed marketplace plugin with native channels available, `interlinked`
-sets `INTERLINK_CHANNELS=1` and adds the development-channel flag. The Stop listener
-then self-disables. Applicable organization settings still apply. The launcher
-names `plugin:interlink@interlink`, so it is intended for that marketplace install,
-not the local `--plugin-dir` testing path.
+For an installed marketplace plugin with native channels available, see the
+[native-channel launch settings](../docs/DELIVERY.md#claude-native-channels).
+The Stop listener self-disables in that mode. Applicable organization settings
+still apply.
 
 ## Tools
 

@@ -1,10 +1,10 @@
 //! Agent-to-agent messaging for Claude Code and Codex CLI.
 //!
 //! Claude Code and Codex CLI agents each run an MCP server: outbound is the
-//! `send_message` tool. Claude inbound is delivered by default to a local inbox that a
-//! background `interlink-mcp wait` listener drains (plain `claude`, no flags), with
-//! native `notifications/claude/channel` push as an opt-in enhancement (`interlinked`
-//! / `INTERLINK_CHANNELS=1`). A small **bus** routes messages between agents and
+//! `send_message` tool. Claude inbound uses its authenticated local messaging socket
+//! when available. Older hosts use a local inbox drained by `interlink-mcp wait`.
+//! Native `notifications/claude/channel` push remains opt-in through
+//! `INTERLINK_CHANNELS=1` and Claude's channel flag. A small **bus** routes messages between agents and
 //! buffers for agents that are offline.
 //! Codex CLI uses the same protocol and trust gate, with local lifecycle hooks
 //! binding the MCP instance to a thread and [`codex`] delivering through its queue.
@@ -34,6 +34,9 @@ pub mod bus;
 
 #[cfg(feature = "agent")]
 pub mod codex;
+
+#[cfg(feature = "agent")]
+pub mod claude;
 
 #[cfg(feature = "agent")]
 pub mod delivery;

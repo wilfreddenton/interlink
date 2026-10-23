@@ -19,12 +19,13 @@ use std::time::Duration;
 
 use interlink::bus::Broker;
 use interlink::identity::{AgentKey, MessageKind, SessionInfo, TaskStatus};
+use interlink::inbox::Inbox;
 use interlink::now_ms;
 use interlink::pairing::{ControlMessage, PairingStore, Request as PairRequest};
 use interlink::store::Store;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UnixListener};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::{sleep, timeout};
 
@@ -52,7 +53,33 @@ impl Client {
         session: &str,
         channels: bool,
     ) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_interlink-mcp"))
+        Self::start_config(dir, host, url, cli, session, channels, None).await
+    }
+
+    async fn start_socket(dir: &Path, url: &str, session: &str, socket: &Path) -> Self {
+        Self::start_config(
+            dir,
+            "claude",
+            url,
+            Path::new("unused"),
+            session,
+            false,
+            Some(socket),
+        )
+        .await
+    }
+
+    async fn start_config(
+        dir: &Path,
+        host: &str,
+        url: &str,
+        cli: &Path,
+        session: &str,
+        channels: bool,
+        socket: Option<&Path>,
+    ) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_interlink-mcp"));
+        command
             .args(["--host", host, "--url", url, "--session", session])
             .arg("--key")
             .arg(dir.join("id.key"))
@@ -61,13 +88,19 @@ impl Client {
             .arg("--codex-bin")
             .arg(cli)
             .env("INTERLINK_CHANNELS", if channels { "1" } else { "0" })
+            .env("INTERLINK_CLAUDE_DELIVERY", "inbox")
             .env("XDG_STATE_HOME", dir.join("state"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+            .kill_on_drop(true);
+        if let Some(socket) = socket {
+            command
+                .env("INTERLINK_CLAUDE_DELIVERY", "socket")
+                .env("CLAUDE_CODE_MESSAGING_SOCKET", socket)
+                .env("CLAUDE_CODE_MESSAGING_TOKEN", "socket-test");
+        }
+        let mut child = command.spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap()).lines();
         let mut client = Self {
@@ -76,6 +109,17 @@ impl Client {
             stdout,
             next_id: 1,
         };
+        // New hosts probe discovery before falling back to legacy initialize.
+        for id in [json!("discovery-probe"), json!(0)] {
+            client
+                .write(json!({"jsonrpc":"2.0", "id":id, "method":"server/discover", "params":{}}))
+                .await;
+            let reply = client.read().await;
+            assert_eq!(reply["id"], id);
+            assert_eq!(reply["error"]["code"], -32601);
+        }
+        let ping = client.rpc("ping", json!({})).await;
+        assert_eq!(ping["result"], json!({}));
         let init = client
             .rpc(
                 "initialize",
@@ -91,6 +135,15 @@ impl Client {
         client
             .write(json!({"jsonrpc":"2.0", "method":"notifications/initialized"}))
             .await;
+        if socket.is_some() {
+            let unbound = client.tool("get_my_session_id", json!({})).await;
+            assert!(unbound.get("error").is_some());
+            success(
+                &client
+                    .tool("bind_claude_session", json!({"session_id": session}))
+                    .await,
+            );
+        }
         client
     }
 
@@ -226,6 +279,12 @@ async fn codex_binding_cross_host_delivery_and_retry() {
                 .await,
         );
     }
+    summary_guidance(
+        &mut codex,
+        "bind_codex_session",
+        json!({"thread_id":CODEX_THREAD}),
+    )
+    .await;
     let rebound = codex
         .tool("bind_codex_session", json!({"thread_id":OTHER_THREAD}))
         .await;
@@ -392,6 +451,33 @@ fn tool_text(reply: &Value) -> &str {
     reply["result"]["content"][0]["text"].as_str().unwrap()
 }
 
+async fn summary_guidance(client: &mut Client, tool: &str, mut args: Value) {
+    for (index, event) in [
+        "UserPromptSubmit",
+        "PreToolUse",
+        "SessionStart",
+        "UserPromptSubmit",
+    ]
+    .iter()
+    .enumerate()
+    {
+        args["hook_event_name"] = json!(event);
+        let reply = client.tool(tool, args.clone()).await;
+        success(&reply);
+        let output: Value = serde_json::from_str(tool_text(&reply)).unwrap();
+        if index == 0 {
+            assert_eq!(output["hookSpecificOutput"]["hookEventName"], *event);
+            let context = output["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap();
+            assert!(context.contains("set_summary"));
+            assert!(context.contains("only when you judge"));
+        } else {
+            assert_eq!(output, json!({}), "repeated guidance from {event}");
+        }
+    }
+}
+
 async fn bind(client: &mut Client, thread: &str) {
     success(
         &client
@@ -485,6 +571,431 @@ async fn inbox_survives_server_restart_until_hook_consumes_it() {
         fs::metadata(inbox).unwrap().len()
     );
     second.close().await;
+    server.abort();
+}
+
+async fn socket_frame(listener: &UnixListener) -> Value {
+    timeout(Duration::from_secs(10), async {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut lines = BufReader::new(stream).lines();
+        let auth: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(auth, json!({"type":"auth", "token":"socket-test"}));
+        let message: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert!(lines.next_line().await.unwrap().is_none());
+        message
+    })
+    .await
+    .unwrap()
+}
+
+async fn socket_message(listener: &UnixListener) -> String {
+    socket_frame(listener).await["message"]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn socket_chat_switch_isolates_mailboxes_and_resume_recovers_unread() {
+    let dir = tempfile::tempdir().unwrap();
+    let receiver = AgentKey::generate().unwrap();
+    let sender = AgentKey::generate().unwrap();
+    identity(dir.path(), &receiver, &sender);
+    let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = broker.clone().router();
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let socket_path = dir.path().join("same-process.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let mut client = Client::start_socket(dir.path(), &url, "chat-a", &socket_path).await;
+    summary_guidance(
+        &mut client,
+        "bind_claude_session",
+        json!({"session_id":"chat-a"}),
+    )
+    .await;
+    let route_a = format!("{}#chat-a", receiver.id().to_b64());
+    let route_b = format!("{}#chat-b", receiver.id().to_b64());
+    broker
+        .enqueue(
+            &route_a,
+            json!(sender.sign(receiver.id(), "a-before-clear", now_ms(), "a1")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    drained(&broker, &route_a).await;
+    let old_frame = socket_frame(&listener).await;
+    assert_eq!(old_frame["session_id"], "chat-a");
+    success(
+        &client
+            .tool("end_claude_session", json!({"session_id":"chat-a"}))
+            .await,
+    );
+    assert!(
+        client
+            .tool("receive_messages", json!({}))
+            .await
+            .get("error")
+            .is_some()
+    );
+    assert!(broker.roster(now_ms()).is_empty());
+    broker
+        .enqueue(
+            &route_a,
+            json!(sender.sign(receiver.id(), "a-during-clear", now_ms(), "a2")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    success(
+        &client
+            .tool("bind_claude_session", json!({"session_id":"chat-b"}))
+            .await,
+    );
+    summary_guidance(
+        &mut client,
+        "bind_claude_session",
+        json!({"session_id":"chat-b"}),
+    )
+    .await;
+    let empty = client.tool("receive_messages", json!({})).await;
+    assert!(!tool_text(&empty).contains("a-before-clear"));
+    assert!(!tool_text(&empty).contains("a-during-clear"));
+    // A delayed end event from A must not tear down B.
+    success(
+        &client
+            .tool("end_claude_session", json!({"session_id":"chat-a"}))
+            .await,
+    );
+    assert!(tool_text(&client.tool("get_my_session_id", json!({})).await).contains("chat-b"));
+    broker
+        .enqueue(
+            &route_b,
+            json!(sender.sign(receiver.id(), "b-only", now_ms(), "b1")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    drained(&broker, &route_b).await;
+    let frame = socket_frame(&listener).await;
+    assert_eq!(frame["session_id"], "chat-b");
+    assert_eq!(broker.depth(&route_a).await.unwrap(), 1);
+    let reply = client
+        .tool(
+            "receive_messages",
+            json!({"notification_id": notice_id(frame["message"]["content"].as_str().unwrap())}),
+        )
+        .await;
+    assert!(tool_text(&reply).contains("b-only"));
+    assert!(!tool_text(&reply).contains("a-before-clear"));
+    client.acknowledge(&reply).await;
+    // A prompt/pre-tool binding also handles a missed SessionEnd event.
+    success(
+        &client
+            .tool("bind_claude_session", json!({"session_id":"chat-a"}))
+            .await,
+    );
+    summary_guidance(
+        &mut client,
+        "bind_claude_session",
+        json!({"session_id":"chat-a"}),
+    )
+    .await;
+    drained(&broker, &route_a).await;
+    let frame = socket_frame(&listener).await;
+    assert_eq!(frame["session_id"], "chat-a");
+    let reply = client
+        .tool(
+            "receive_messages",
+            json!({"notification_id": notice_id(frame["message"]["content"].as_str().unwrap())}),
+        )
+        .await;
+    assert!(tool_text(&reply).contains("a-before-clear"));
+    assert!(tool_text(&reply).contains("a-during-clear"));
+    assert!(!tool_text(&reply).contains("b-only"));
+    client.acknowledge(&reply).await;
+    success(
+        &client
+            .tool("bind_claude_session", json!({"session_id":"chat-a"}))
+            .await,
+    );
+    assert!(
+        timeout(Duration::from_millis(1300), listener.accept())
+            .await
+            .is_err()
+    );
+    client.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn socket_upgrade_preserves_pairing_notices_and_legacy_wakeup_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let receiver = AgentKey::generate().unwrap();
+    let sender = AgentKey::generate().unwrap();
+    let stranger = AgentKey::generate().unwrap();
+    let accepter = AgentKey::generate().unwrap();
+    identity(dir.path(), &receiver, &sender);
+    let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = broker.clone().router();
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let client = Client::start_options(
+        dir.path(),
+        "claude",
+        &url,
+        Path::new("unused"),
+        "upgrade",
+        false,
+    )
+    .await;
+    let route = format!("{}#upgrade", receiver.id().to_b64());
+    let pairing = PairingStore::new(
+        &dir.path()
+            .join("state/interlink/pairing")
+            .join(receiver.id().to_b64())
+            .join("upgrade.json"),
+    );
+    let mut knock = stranger.sign_as(
+        receiver.id(),
+        "pending-stranger",
+        now_ms(),
+        "knock",
+        MessageKind::PairRequest,
+    );
+    knock.reply_to = Some(format!("{}#sender", stranger.id().to_b64()));
+    broker
+        .enqueue(&route, json!(knock), now_ms())
+        .await
+        .unwrap();
+    drained(&broker, &route).await;
+    for (id, name) in [("conflict", "peer"), ("accepted", "new-peer")] {
+        pairing
+            .request(
+                PairRequest {
+                    key: accepter.id().to_b64(),
+                    name: name.into(),
+                    request_id: id.into(),
+                    reply_to: format!("{}#sender", accepter.id().to_b64()),
+                },
+                |_| ControlMessage {
+                    route: format!("{}#sender", accepter.id().to_b64()),
+                    msg: receiver.sign_as(
+                        accepter.id(),
+                        "receiver",
+                        now_ms(),
+                        id,
+                        MessageKind::PairRequest,
+                    ),
+                },
+            )
+            .unwrap();
+        pairing.sent(id).unwrap();
+        let accept = accepter.sign_full(
+            receiver.id(),
+            "accepter",
+            now_ms(),
+            id,
+            MessageKind::PairAccept,
+            None,
+            None,
+            Some(id),
+        );
+        broker
+            .enqueue(&route, json!(accept), now_ms())
+            .await
+            .unwrap();
+        drained(&broker, &route).await;
+        assert!(
+            pairing
+                .pending_accept(&accepter.id().to_b64(), Some(id))
+                .unwrap()
+                .is_none()
+        );
+    }
+    broker
+        .enqueue(
+            &route,
+            json!(sender.sign(receiver.id(), "pending-body", now_ms(), "body")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    drained(&broker, &route).await;
+    let inbox_path = dir.path().join("state/interlink/inbox/upgrade.jsonl");
+    wait_until(|| fs::read_to_string(&inbox_path).unwrap().lines().count() == 4).await;
+    let lines = fs::read_to_string(&inbox_path).unwrap();
+    let old_notice: Value = lines
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|record| record["sender"] == "Interlink")
+        .unwrap();
+    client.close().await;
+
+    let socket_path = dir.path().join("claude.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let old_inbox = Inbox::open(&inbox_path).unwrap();
+    let old_reader = old_inbox.listener_lock().unwrap().unwrap();
+    let mut client = Client::start_socket(dir.path(), &url, "upgrade", &socket_path).await;
+    assert!(
+        timeout(Duration::from_millis(1300), listener.accept())
+            .await
+            .is_err(),
+        "socket migration raced the active legacy listener"
+    );
+    assert!(!inbox_path.with_extension("cursor").exists());
+    drop(old_reader);
+    let mut delivered = Vec::new();
+    for _ in 0..4 {
+        delivered.push(socket_message(&listener).await);
+    }
+    assert!(delivered[0].contains("Pairing request") && delivered[0].contains("pending-stranger"));
+    assert!(delivered[1].contains("Pairing could not complete"));
+    assert!(delivered[2].contains("Paired with 'new-peer'"));
+    assert_eq!(
+        notice_id(&delivered[3]),
+        old_notice["msg_id"].as_str().unwrap()
+    );
+    wait_until(|| {
+        fs::read_to_string(inbox_path.with_extension("cursor"))
+            .is_ok_and(|cursor| cursor == lines.len().to_string())
+    })
+    .await;
+    let reply = client
+        .tool(
+            "receive_messages",
+            json!({"notification_id": notice_id(&delivered[3])}),
+        )
+        .await;
+    assert!(tool_text(&reply).contains("pending-body"));
+    client.acknowledge(&reply).await;
+    assert!(
+        tool_text(&client.tool("list_pair_requests", json!({})).await).contains("pending-stranger")
+    );
+    client.close().await;
+    let client = Client::start_socket(dir.path(), &url, "upgrade", &socket_path).await;
+    assert!(
+        timeout(Duration::from_millis(1300), listener.accept())
+            .await
+            .is_err(),
+        "committed notices replayed after restart"
+    );
+    client.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn socket_pairing_failure_preserves_intake_and_retries_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let receiver = AgentKey::generate().unwrap();
+    let sender = AgentKey::generate().unwrap();
+    let stranger = AgentKey::generate().unwrap();
+    identity(dir.path(), &receiver, &sender);
+    let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = broker.clone().router();
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let socket_path = dir.path().join("absent.sock");
+    let mut client = Client::start_socket(dir.path(), &url, "offline", &socket_path).await;
+    let route = format!("{}#offline", receiver.id().to_b64());
+    let mut knock = stranger.sign_as(
+        receiver.id(),
+        "pending-stranger",
+        now_ms(),
+        "knock",
+        MessageKind::PairRequest,
+    );
+    knock.reply_to = Some(format!("{}#sender", stranger.id().to_b64()));
+    broker
+        .enqueue(&route, json!(knock), now_ms())
+        .await
+        .unwrap();
+    let pairing = PairingStore::new(
+        &dir.path()
+            .join("state/interlink/pairing")
+            .join(receiver.id().to_b64())
+            .join("offline.json"),
+    );
+    pairing
+        .request(
+            PairRequest {
+                key: sender.id().to_b64(),
+                name: "peer".into(),
+                request_id: "request".into(),
+                reply_to: format!("{}#sender", sender.id().to_b64()),
+            },
+            |_| ControlMessage {
+                route: format!("{}#sender", sender.id().to_b64()),
+                msg: receiver.sign_as(
+                    sender.id(),
+                    "receiver",
+                    now_ms(),
+                    "request",
+                    MessageKind::PairRequest,
+                ),
+            },
+        )
+        .unwrap();
+    pairing.sent("request").unwrap();
+    let accept = sender.sign_full(
+        receiver.id(),
+        "peer",
+        now_ms(),
+        "accept",
+        MessageKind::PairAccept,
+        None,
+        None,
+        Some("request"),
+    );
+    broker
+        .enqueue(&route, json!(accept), now_ms())
+        .await
+        .unwrap();
+    broker
+        .enqueue(
+            &route,
+            json!(sender.sign(receiver.id(), "after-pairing", now_ms(), "body")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    drained(&broker, &route).await;
+    assert!(
+        pairing
+            .pending_accept(&sender.id().to_b64(), Some("request"))
+            .unwrap()
+            .is_none()
+    );
+    let reply = client
+        .tool("receive_messages", json!({"reset_notification":true}))
+        .await;
+    assert!(tool_text(&reply).contains("after-pairing"));
+    client.acknowledge(&reply).await;
+    let inbox_path = dir.path().join("state/interlink/inbox/offline.jsonl");
+    let lines = fs::read_to_string(&inbox_path).unwrap();
+    assert_eq!(lines.lines().count(), 2);
+    assert!(!inbox_path.with_extension("cursor").exists());
+    client.close().await;
+
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let client = Client::start_socket(dir.path(), &url, "offline", &socket_path).await;
+    assert!(socket_message(&listener).await.contains("Pairing request"));
+    assert!(
+        socket_message(&listener)
+            .await
+            .contains("Paired with 'peer'")
+    );
+    wait_until(|| {
+        fs::read_to_string(inbox_path.with_extension("cursor"))
+            .is_ok_and(|cursor| cursor == lines.len().to_string())
+    })
+    .await;
+    client.close().await;
     server.abort();
 }
 

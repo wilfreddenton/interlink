@@ -5,6 +5,40 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-22
+
+### Removed
+- Remove the optional `interlinked` Claude launcher from builds and release
+  archives. Launch `claude` directly for socket delivery. Native channels remain
+  available through explicit environment and CLI settings.
+
+### Fixed
+- Accept a pre-initialization `server/discover` probe with a method-not-found
+  response so newer Claude hosts can fall back to the normal MCP handshake.
+- Prefer Claude's authenticated local messaging socket when available, eliminating
+  Stop-listener maintenance turns while idle. Keep the legacy inbox listener for
+  hosts without a socket, with `INTERLINK_CLAUDE_DELIVERY=inbox` as an explicit
+  override. Update both the MCP server and listener binary, then restart Claude.
+- Forward pending legacy inbox records, including pairing requests and
+  acceptance/conflict notices, when switching to the socket. Preserve ordinary
+  wake-up IDs and unread bodies without replaying committed records.
+- Persist socket pairing notices before broker acknowledgement and deliver them
+  in the background, so an unavailable socket cannot block ordinary broker intake.
+
+- Bind Claude delivery to the current conversation through lifecycle hooks.
+  `/clear` selects a fresh mailbox; resuming reopens the existing mailbox. Socket
+  frames include `session_id`, preventing late delivery into a different chat.
+  Update the plugin hooks with the MCP binary and send an initial prompt.
+
+### Added
+- Binding hooks give Claude and Codex one reminder to describe their work with
+  `set_summary`, helping other sessions find relevant collaborators through
+  `discover`. Agents choose when updates are useful; no per-turn or idle checks.
+- A Claude 2.1.308 host fixture covers socket wake-up, real MCP fetch/acknowledgement,
+  inbound refusal, and disabled listener renewal using local model responses.
+- Live Claude/Codex validation uses checkout binaries, waits for idle hosts before
+  wake-up checks, and verifies socket delivery stays quiet after real-model exchanges.
+
 ## [0.11.2] - 2026-10-18
 
 ### Fixed

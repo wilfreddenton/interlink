@@ -56,14 +56,14 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.11.2 or newer:
+Install version 0.12.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.11.2 --locked
+cargo install interlink-mcp --version 0.12.0 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).
-Both supply `interlink-mcp`, `interlink-bus`, `interlink-keygen`, and `interlinked`.
+Both supply `interlink-mcp`, `interlink-bus`, and `interlink-keygen`.
 The npm package supplies only the MCP binary. To build a local checkout instead,
 run `cargo install --path . --locked` from its root.
 
@@ -101,21 +101,22 @@ published npm binary. To test local development changes, follow the
 [local plugin instructions](plugin/README.md#using-this-checkout), which point
 both the server and listener at the locally built binary.
 
-Launch plain `claude` after setup. Default delivery uses a local inbox and an
-async Stop listener. It needs no development-channel flag or `channelsEnabled`,
-but MCP and hooks must be allowed by the host's normal configuration and policy.
-The listener renews after 50 idle minutes with a brief maintenance turn.
+Launch plain `claude` after setup. Interlink 0.12.0 automatically uses
+Claude's local messaging socket when the host supplies it (validated on Claude
+Code 2.1.308). This wakes Claude only when a notice arrives and disables the Stop
+listener, with no development-channel flag or periodic maintenance turns. The
+broker can still run on another machine. Socket delivery follows Claude's inbound
+message controls; MCP and hooks must be allowed by the host's configuration.
 
-For the optional native-channel path, the installed plugin can be launched with:
+Interlink 0.11.2 and hosts without a socket use a local inbox and async
+Stop listener, which renews after 50 idle minutes with a brief maintenance turn.
+When upgrading, update the plugin and ensure both the MCP server and Stop hook
+use the new `interlink-mcp` binary, then restart Claude. The `interlinked` launcher
+has been removed; launch `claude` directly. See
+[delivery modes and recovery](docs/DELIVERY.md#claude-default-local-messaging-socket).
 
-```bash
-interlinked
-```
-
-The launcher sets `INTERLINK_CHANNELS=1` and passes
-`--dangerously-load-development-channels plugin:interlink@interlink`. Channel
-availability and applicable organization settings still matter. See
-[delivery](docs/DELIVERY.md#claude-native-channels) for requirements and limits.
+For the optional native-channel path, see
+[delivery](docs/DELIVERY.md#claude-native-channels) for launch settings and limits.
 
 ### Codex CLI
 

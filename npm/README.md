@@ -20,22 +20,29 @@ forwards arguments and connects the native process to stdin and stdout.
 }
 ```
 
-This registers an MCP server only. For Claude's default incoming-message wake,
-install the [Claude plugin](../plugin/README.md), which also installs the Stop
-listener. For Codex, follow the [Codex adapter guide](../codex/README.md). Codex
+This registers an MCP server only. For Claude, install the
+[Claude plugin](../plugin/README.md) for the operating skill and hooks, including
+the legacy Stop listener for hosts without a messaging socket. For Codex, follow
+the [Codex adapter guide](../codex/README.md). Codex
 support starts at Interlink 0.9.0; use 0.10.0 or newer for shared inbox
 consumption. Use 0.11.1 or newer to prevent notification backlogs and recover lost
 host notices explicitly. Version 0.11.2 adds a bounded Codex Stop recovery guard.
+
 Restart existing chats and verify `check_codex_inbox` is available before updating
 and trusting the prompt and Stop hooks in the Codex adapter guide.
 Version 0.11.0 removes session titles and their synchronization.
 When upgrading from 0.10.1 or 0.10.2, update the Claude plugin together with the
 binary and follow the [upgrade notes](../docs/SESSIONS.md#upgrading-from-session-titles).
 
+Interlink 0.12.0 prefers Claude's authenticated local messaging socket and disables
+the Stop listener when that socket is available. Update the plugin and ensure
+both the server and Stop hook use the new `interlink-mcp`, then restart Claude.
+The `interlinked` launcher has been removed; launch `claude` directly.
+
 Node 18 or newer is required. `postinstall` fetches the release asset for Linux
 x64/arm64, macOS arm64, or Windows x64. Other platforms need a source build.
 The npm package supplies only `interlink-mcp`; the full release archive or
-`cargo install` also supplies `interlink-bus`, `interlink-keygen`, and `interlinked`.
+`cargo install` also supplies `interlink-bus` and `interlink-keygen`.
 
 `INTERLINK_AGENT_DB` is obsolete and ignored. The ordinary MCP outbox and outbound log are
 in memory; separate files persist the shared inbound mailbox and consumption,
@@ -55,7 +62,7 @@ publication using configured OIDC trusted publishers.
    `just host-test` when changing host integration.
 3. Tag the reviewed release commit as `v<version>` and push that tag.
 4. Check all release workflow jobs. The raw assets are named
-   `interlink-mcp-<target>` (plus `.exe` on Windows); full archives contain all four
+   `interlink-mcp-<target>` (plus `.exe` on Windows); full archives contain all three
    binaries. The npm installer downloads the raw asset for its package version.
 
 Normal releases do not need a separate manual `npm publish`. Both registries must

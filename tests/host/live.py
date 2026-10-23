@@ -1,9 +1,10 @@
-"""Opt-in delivery checks using installed CLIs and real model accounts."""
+"""Opt-in delivery checks using the checkout, installed CLIs, and real model accounts."""
 
 import json
 import os
 import queue
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -22,10 +23,9 @@ except ImportError as error:
 ROOT = Path(__file__).resolve().parents[2]
 WORK = ROOT / 'target/host-validation/live' / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6])
 WORK.mkdir(parents=True)
-MCP_BIN = shutil.which('interlink-mcp')
-if MCP_BIN is None:
-    raise SystemExit('Install Interlink first with cargo install --path . --locked')
-BIN = Path(MCP_BIN).parent
+BIN = ROOT / 'target/debug'
+if not (BIN / 'interlink-mcp').is_file():
+    raise SystemExit('Build Interlink first with cargo build --all-features --bins')
 CODEX_TEST_HOME = WORK / 'codex-home'
 CODEX_TEST_HOME.mkdir()
 PROCESSES = []
@@ -36,7 +36,7 @@ def launch(args, label, env=None):
     log = open(WORK / (label + '.stderr'), 'w')
     LOGS.append(log)
     p = subprocess.Popen([str(x) for x in args], cwd=WORK, env=env, stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE, stderr=log, text=True)
+                         stdout=subprocess.PIPE, stderr=log, text=True, start_new_session=True)
     PROCESSES.append(p)
     return p
 
@@ -58,7 +58,7 @@ class Rpc:
         result = self.call('initialize', params)
         self.send({'jsonrpc': '2.0', 'method': 'notifications/initialized' if mcp else 'initialized'})
         if mcp:
-            print('Installed MCP:', result['serverInfo'], flush=True)
+            print('Checkout MCP:', result['serverInfo'], flush=True)
 
     def reader(self):
         for line in self.p.stdout:
@@ -122,8 +122,11 @@ def main():
     if not auth.is_file():
         raise RuntimeError('The live test needs Codex file-based login in ' + str(auth))
     (home / 'auth.json').symlink_to(auth)
-    env = dict(os.environ, CODEX_HOME=str(home), XDG_STATE_HOME=str(WORK / 'state'))
-    env.pop('CLAUDECODE', None)
+    env = dict(os.environ, CODEX_HOME=str(home), XDG_STATE_HOME=str(WORK / 'state'),
+               INTERLINK_CHANNELS='0', INTERLINK_CLAUDE_DELIVERY='auto')
+    for name in ['CLAUDECODE', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN',
+                 'CLAUDE_CODE_SESSION_ID', 'INTERLINK_SESSION']:
+        env.pop(name, None)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -204,39 +207,60 @@ def main():
              'controller notice is queued before manual consumption')
     initial_notice = sender_inbox.read_text().splitlines()
     assert len(initial_notice) == 1, initial_notice
-    wait_for(lambda: 'READY' in drain(), 'live Codex model registers and sends via installed MCP')
+    wait_for(lambda: 'READY' in drain(), 'live Codex model registers and sends via checkout MCP')
+    def codex_idle():
+        while True:
+            try:
+                server.events.append(server.q.get_nowait())
+            except queue.Empty:
+                break
+        turns = [event for event in server.events
+                 if event.get('method') in ['turn/started', 'turn/completed']
+                 and event.get('params', {}).get('threadId') == tid]
+        return turns and turns[-1]['method'] == 'turn/completed'
+    wait_for(codex_idle, 'Codex is idle before the wake-up message')
     sender.tool('send_message', {'to': 'self', 'session': tid, 'text': 'ECHO:codex-idle'})
     wait_for(lambda: 'ACK:codex-idle' in drain(), 'real codex queue wakes idle model, which fetches, acknowledges, and replies')
 
     plugin = WORK/'plugin'
     shutil.copytree(ROOT/'plugin', plugin)
-    spec = {'command': str(BIN/'interlink-mcp'), 'args': ['--host', 'claude', *args], 'env': {'XDG_STATE_HOME': str(WORK/'state'), 'INTERLINK_CHANNELS': '0'}}
+    spec = {'command': str(BIN/'interlink-mcp'), 'args': ['--host', 'claude', *args], 'env': {'XDG_STATE_HOME': str(WORK/'state'), 'INTERLINK_CHANNELS': '0', 'INTERLINK_CLAUDE_DELIVERY': 'auto'}}
     (plugin/'.mcp.json').write_text(json.dumps({'mcpServers': {'interlink': spec}}))
     hooks = json.loads((plugin/'hooks/hooks.json').read_text())
-    hooks['hooks']['Stop'][0]['hooks'][0]['command'] = str(BIN/'interlink-mcp') + ' wait'
+    # A one-second legacy renewal makes accidental polling visible during the quiet check.
+    hooks['hooks']['Stop'][0]['hooks'][0]['command'] = str(BIN/'interlink-mcp') + ' wait --renew-after-secs 1'
     (plugin/'hooks/hooks.json').write_text(json.dumps(hooks))
     claude_id = str(uuid.uuid4())
-    claude_env = dict(os.environ, XDG_STATE_HOME=str(WORK/'state'), INTERLINK_CHANNELS='0')
-    claude_env.pop('CLAUDECODE', None)
+    claude_env = dict(env)
     claude = launch(['claude', '--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
         '--no-session-persistence', '--session-id', claude_id, '--setting-sources', '', '--plugin-dir', plugin,
+        '--debug-file', WORK/'claude.debug',
         '--strict-mcp-config', '--mcp-config', json.dumps({'mcpServers': {'plugin:interlink:interlink': spec}}),
         '--tools', '', '--allowedTools', ','.join('mcp__plugin_interlink_interlink__' + name for name in
         ['get_my_session_id', 'send_message', 'receive_messages', 'acknowledge_messages', 'discover']),
         '--permission-mode', 'dontAsk'], 'claude', claude_env)
     claude_log = open(WORK/'claude.jsonl', 'w')
     LOGS.append(claude_log)
+    claude_events = []
     def claude_reader():
         for line in claude.stdout:
             claude_log.write(line)
             claude_log.flush()
+            claude_events.append(json.loads(line))
+    def claude_turn_events():
+        # Hook lifecycle events can arrive after result without starting another model turn.
+        return [event for event in claude_events if event.get('type') in ['assistant', 'user', 'result']]
+    def claude_idle():
+        events = claude_turn_events()
+        return events and events[-1]['type'] == 'result'
     threading.Thread(target=claude_reader, daemon=True).start()
     seen.clear()
     claude.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': instruction}})+'\n')
     claude.stdin.flush()
-    wait_for(lambda: 'READY' in drain(), 'live Claude model registers and sends via installed MCP')
+    wait_for(lambda: 'READY' in drain(), 'live Claude model registers and sends via checkout MCP')
+    wait_for(claude_idle, 'Claude is idle before the wake-up message')
     sender.tool('send_message', {'to': 'self', 'session': claude_id, 'text': 'ECHO:claude-idle'})
-    wait_for(lambda: 'ACK:claude-idle' in drain(), 'Claude Stop listener wakes idle model, which fetches, acknowledges, and replies')
+    wait_for(lambda: 'ACK:claude-idle' in drain(), 'Claude delivery wakes idle model, which fetches, acknowledges, and replies')
     for i in range(6):
         for session in [tid, claude_id]:
             sender.tool('send_message', {'to': 'self', 'session': session, 'text': f'ECHO:burst-{session[:8]}-{i}'})
@@ -257,13 +281,21 @@ def main():
             for recipient, token in [(tid, 'codex-to-claude'), (claude_id, 'claude-to-codex')]
         )
     wait_for(consumed_cross_messages, 'bidirectional live Claude/Codex conversation acknowledged', 240)
+    wait_for(claude_idle, 'Claude finishes the exchange')
+    before = len(claude_turn_events())
+    time.sleep(10)
+    assert len(claude_turn_events()) == before, 'idle Claude started additional model turns'
+    assert claude.poll() is None, 'Claude exited instead of remaining available'
+    assert not (WORK/'state/interlink/inbox'/f'{claude_id}.jsonl').exists(), 'Claude used legacy inbox delivery'
+    print('PASS: socket delivery stayed quiet for ten seconds with one-second legacy renewal configured', flush=True)
     assert sender_inbox.read_text().splitlines() == initial_notice, 'manual consumption accumulated notices'
     print('PASS: manual fetch/ack kept one outstanding notice throughout the live exchange', flush=True)
     summary = {'codex_session': tid, 'claude_session': claude_id,
                'codex_version': subprocess.check_output(['codex', '--version'], text=True).strip(),
                'claude_version': subprocess.check_output(['claude', '--version'], text=True).strip(),
                'interlink_version': subprocess.check_output([str(BIN/'interlink-mcp'), '--version'], text=True).strip(),
-               'checks': ['idle_codex', 'idle_claude', 'six_message_bursts', 'bidirectional_exchange', 'manual_consumption_notice_coalescing']}
+               'interlink_binary': str(BIN/'interlink-mcp'),
+               'checks': ['idle_codex', 'idle_claude', 'six_message_bursts', 'bidirectional_exchange', 'socket_idle_quiet', 'manual_consumption_notice_coalescing']}
     (WORK/'summary.json').write_text(json.dumps(summary, indent=2)+'\n')
     server.p.ws.close()
     print('ALL LIVE CHECKS PASSED', flush=True)
@@ -274,12 +306,15 @@ try:
     main()
 finally:
     for p in reversed(PROCESSES):
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
         if p.poll() is None:
-            p.terminate()
             try:
                 p.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                p.kill()
+                os.killpg(p.pid, signal.SIGKILL)
                 p.wait()
     home = CODEX_TEST_HOME
     if home.exists():

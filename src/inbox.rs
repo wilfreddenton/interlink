@@ -91,6 +91,14 @@ impl Inbox {
     }
 
     pub fn read_batch(&self) -> Result<Batch> {
+        self.read_up_to(64)
+    }
+
+    pub fn read_one(&self) -> Result<Batch> {
+        self.read_up_to(1)
+    }
+
+    fn read_up_to(&self, max_lines: usize) -> Result<Batch> {
         let _lock = lock(&self.path.with_extension("io-lock"))?;
         let cursor = match std::fs::read_to_string(self.path.with_extension("cursor")) {
             Ok(raw) => raw.trim().parse::<u64>()?,
@@ -110,7 +118,7 @@ impl Inbox {
             lines: Vec::new(),
             end: start,
         };
-        while batch.lines.len() < 64 && batch.end - start < 256 * 1024 {
+        while batch.lines.len() < max_lines && batch.end - start < 256 * 1024 {
             let mut line = String::new();
             let bytes = reader.read_line(&mut line)?;
             // A crash during append can leave a partial record. Never consume it.

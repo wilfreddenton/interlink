@@ -215,6 +215,35 @@ impl Mailbox {
         self.reserve_notice_at(now_ms())
     }
 
+    /// After a conversation ends, its host queue no longer represents pending work.
+    /// Keep the bodies so resuming that conversation can issue a fresh wake-up.
+    pub fn end_session(&self) -> Result<()> {
+        let _lock = lock(&self.path.with_extension("lock"))?;
+        let mut data = self.load()?;
+        if data.notice.take().is_some() {
+            self.save(&data)?;
+        }
+        Ok(())
+    }
+
+    /// Call while holding the notifier lock when replacing the Stop listener.
+    pub fn retry_legacy_inbox_notice(&self) -> Result<()> {
+        let _lock = lock(&self.path.with_extension("lock"))?;
+        let mut data = self.load()?;
+        if data
+            .notice
+            .as_ref()
+            .is_some_and(|notice| !notice.observed && notice.state == "inbox_queued")
+        {
+            // The old listener will no longer drain this notice. Its message
+            // bodies stay unread; an already-running old listener may still wake
+            // once, but stale notification IDs cannot retire the replacement.
+            data.notice = None;
+            self.save(&data)?;
+        }
+        Ok(())
+    }
+
     fn reserve_notice_at(&self, now: u64) -> Result<Option<Notice>> {
         let _lock = lock(&self.path.with_extension("lock"))?;
         let mut data = self.load()?;
@@ -229,7 +258,7 @@ impl Mailbox {
             if !notice.observed
                 && matches!(
                     notice.state.as_str(),
-                    "host_queued" | "inbox_queued" | "notification_sent"
+                    "host_queued" | "inbox_queued" | "notification_sent" | "socket_sent"
                 )
             {
                 return Ok(None);
@@ -378,6 +407,46 @@ mod tests {
     }
 
     #[test]
+    fn socket_migration_replaces_only_unobserved_legacy_inbox_notices() {
+        for state in [
+            "inbox_queued",
+            "socket_sent",
+            "host_queued",
+            "notification_sent",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mailbox = Mailbox::new(&dir.path().join("mailbox.json"));
+            mailbox
+                .retain(&message("one", "t", None, now_ms()), "peer")
+                .unwrap();
+            let old = mailbox.reserve_notice().unwrap().unwrap();
+            mailbox.finish_notice(&old.id, state).unwrap();
+            mailbox.retry_legacy_inbox_notice().unwrap();
+            assert_eq!(mailbox.receive(None, 100, false).unwrap().len(), 1);
+            if state == "inbox_queued" {
+                let next = mailbox.reserve_notice().unwrap().unwrap();
+                assert_ne!(old.id, next.id);
+                mailbox.finish_notice(&next.id, "socket_sent").unwrap();
+                mailbox.receive(Some(&old.id), 100, false).unwrap();
+                mailbox.retry_legacy_inbox_notice().unwrap();
+                assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+            } else {
+                assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mailbox = Mailbox::new(&dir.path().join("mailbox.json"));
+        mailbox
+            .retain(&message("one", "t", None, now_ms()), "peer")
+            .unwrap();
+        let old = mailbox.reserve_notice().unwrap().unwrap();
+        mailbox.finish_notice(&old.id, "inbox_queued").unwrap();
+        mailbox.receive(Some(&old.id), 100, false).unwrap();
+        mailbox.retry_legacy_inbox_notice().unwrap();
+        assert!(mailbox.reserve_notice_at(u64::MAX).unwrap().is_none());
+    }
+
+    #[test]
     fn stop_check_preserves_queued_notice_but_recovers_started_notice_after_restart() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mailbox.json");
@@ -444,7 +513,12 @@ mod tests {
 
     #[test]
     fn busy_review_queues_one_wakeup_despite_manual_reads_and_acknowledgements() {
-        for state in ["host_queued", "inbox_queued", "notification_sent"] {
+        for state in [
+            "host_queued",
+            "inbox_queued",
+            "notification_sent",
+            "socket_sent",
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("mail.json");
             let mailbox = Mailbox::new(&path);

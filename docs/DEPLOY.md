@@ -49,10 +49,12 @@ export INTERLINK_URL=http://busbox.your-tailnet.ts.net:9440
 claude
 ```
 
-The plugin supplies both the MCP registration and the Stop listener. Adding only
-an MCP server with `claude --mcp-config` does not install the listener needed for
-default inbound delivery. Use the [plugin guide](../plugin/README.md) for local
-checkout testing and the optional `interlinked` native-channel launcher.
+The plugin supplies both the MCP registration and the legacy Stop listener. The
+0.12.0 release uses Claude's local messaging socket when available and
+disables that listener. Version 0.11.2 still needs the Stop hook for
+default inbound delivery; adding only `claude --mcp-config` does not install it.
+Use the [plugin guide](../plugin/README.md) for local checkout testing and optional
+native-channel setup.
 
 For Codex CLI, merge [codex/config.toml](../codex/config.toml) into its config,
 including the lifecycle hooks, and add the remote URL to that server's env table:
