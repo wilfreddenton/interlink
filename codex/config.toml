@@ -1,5 +1,5 @@
 # Merge these sections into ~/.codex/config.toml, then review them in /hooks.
-# Install Interlink 0.11.2 or newer first.
+# Install Interlink 0.12.0 or newer first.
 [mcp_servers.interlink]
 command = "interlink-mcp"
 args = ["--host", "codex"]
@@ -17,7 +17,7 @@ args = ["--host", "codex"]
 type = "mcp_tool"
 server = "interlink"
 tool = "bind_codex_session"
-input = { thread_id = "${session_id}" }
+input = { thread_id = "${session_id}", hook_event_name = "SessionStart" }
 
 # SessionStart can precede MCP readiness. These idempotent fallbacks bind once
 # the connection is available, including after an MCP server restart.
@@ -26,7 +26,7 @@ input = { thread_id = "${session_id}" }
 type = "mcp_tool"
 server = "interlink"
 tool = "bind_codex_session"
-input = { thread_id = "${session_id}", prompt = "${prompt}" }
+input = { thread_id = "${session_id}", prompt = "${prompt}", hook_event_name = "UserPromptSubmit" }
 
 [[hooks.PreToolUse]]
 matcher = "^mcp__interlink__"
@@ -34,7 +34,7 @@ matcher = "^mcp__interlink__"
 type = "mcp_tool"
 server = "interlink"
 tool = "bind_codex_session"
-input = { thread_id = "${session_id}" }
+input = { thread_id = "${session_id}", hook_event_name = "PreToolUse" }
 
 [[hooks.Stop]]
 [[hooks.Stop.hooks]]

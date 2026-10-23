@@ -225,6 +225,9 @@ try:
     else:
         raise AssertionError('Stop hook did not continue and finish the ignored-notice turn')
     assert len(Provider.requests) == before_requests + 2, 'repeated Stop continuation'
+    assert all(json.dumps(r['input']).count('Interlink session summary:') == 1
+               for r in Provider.requests), 'summary guidance missing or repeated'
+    print('PASS: summary guidance reaches Codex once per thread, without per-turn reminders', flush=True)
     assert 'Interlink inbox needs attention' in json.dumps(recent), recent
     assert 'Interlink has 1 unread messages' in json.dumps(Provider.requests[-1]), 'missing recovery prompt'
     notification_id = notice.split('notification_id="', 1)[1].split('"', 1)[0]

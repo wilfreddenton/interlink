@@ -17,6 +17,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 #[cfg(unix)]
@@ -186,6 +187,7 @@ struct Inner {
     /// This live session's descriptor. `session_id` is fixed at startup; `summary`
     /// is mutable via `set_summary`, so the whole thing sits behind a lock.
     session: RwLock<SessionInfo>,
+    summary_guidance_sent: AtomicBool,
     /// Reply-stickiness: peer key (b64) → the `session_id` it last messaged from,
     /// learned from the inbound `reply_to` hint. Lets a reply return to the exact
     /// session without re-picking, and keeps a conversation pinned to one desk.
@@ -198,6 +200,19 @@ struct CodexClient {
 }
 
 impl Inner {
+    fn binding_response(&self, event: Option<BindingEvent>) -> CallToolResult {
+        let mut output = json!({});
+        if let Some(event) = event
+            && !self.summary_guidance_sent.swap(true, Ordering::Relaxed)
+        {
+            output = json!({"hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": "Interlink session summary: Once you understand your task, use set_summary to briefly describe your work so other sessions can find relevant help through discover. Update it only when you judge that a change in focus or expertise would be useful to them, not every turn."
+            }});
+        }
+        CallToolResult::success(vec![ContentBlock::text(output.to_string())])
+    }
+
     fn mailbox(&self) -> Result<Mailbox> {
         let sid = self.session.read().unwrap().session_id.clone();
         let path = progress_dir()
@@ -365,6 +380,14 @@ struct Agent {
 struct ClaudeSessionArgs {
     session_id: String,
     cwd: Option<String>,
+    hook_event_name: Option<BindingEvent>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+enum BindingEvent {
+    SessionStart,
+    UserPromptSubmit,
+    PreToolUse,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -373,6 +396,7 @@ struct BindCodexArgs {
     thread_id: String,
     /// Supplied only by UserPromptSubmit, to identify a dequeued inbox notice.
     prompt: Option<String>,
+    hook_event_name: Option<BindingEvent>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -619,7 +643,7 @@ impl Agent {
                 }
             }
         }
-        Ok(CallToolResult::success(vec![ContentBlock::text("{}")]))
+        Ok(self.inner.binding_response(args.hook_event_name))
     }
 
     #[tool(
@@ -1181,10 +1205,10 @@ impl Agent {
     }
 
     #[tool(
-        description = "Set this session's summary — a short line describing what you're working on \
-                       — so peers can recognize and pick this session in discover. The session is \
-                       already on the roster from startup; this just labels it. cwd and git repo \
-                       are filled automatically."
+        description = "Set a short work description so peers can find relevant help through discover. \
+                       Set it once you understand your task; update it only when you judge a change \
+                       in focus or expertise useful to other sessions, not every turn. \
+                       cwd and git repo are filled automatically."
     )]
     async fn set_summary(
         &self,
@@ -1750,10 +1774,11 @@ impl ServerHandler for Agent {
                     serde_json::from_value(Value::Object(request.arguments.unwrap_or_default()))
                         .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 if request.name == "bind_claude_session" {
-                    sessions
+                    let inner = sessions
                         .bind(&args.session_id, args.cwd.as_deref(), context.peer.clone())
                         .await
                         .map_err(state_error)?;
+                    return Ok(inner.binding_response(args.hook_event_name));
                 } else {
                     sessions
                         .end(Some(&args.session_id))
@@ -2678,6 +2703,7 @@ async fn main() -> Result<()> {
         outbox: Arc::new(Notify::new()),
         name: node_name,
         session: RwLock::new(session),
+        summary_guidance_sent: AtomicBool::new(false),
         sticky: RwLock::new(HashMap::new()),
     });
 

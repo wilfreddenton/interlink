@@ -39,7 +39,9 @@ tasks use different sessions of one peer.
 
 `send_message(to: "self", session: "<id>", text: "...")` reaches another session
 using the same key without pairing. It cannot address this session itself.
-Use `set_summary(summary: "what you're working on")` for current work.
+Once you understand your task, use `set_summary(summary: "what you're working on")`
+so other sessions can find relevant help through `discover`. Update it only when
+you judge a change in focus or expertise useful to other sessions, not every turn.
 
 Incoming messages appear as channel events or attributed `<interlink>` blocks.
 Claude receives notices through its local socket, native channels, or the legacy

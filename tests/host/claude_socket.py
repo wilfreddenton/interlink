@@ -198,11 +198,14 @@ def run(policy):
         capture_hook = {'type': 'command', 'command': shlex.quote(sys.executable) + ' ' + shlex.quote(str(capture))}
         bind_hook = {'type': 'mcp_tool', 'server': 'interlink', 'tool': 'bind_claude_session',
                      'input': {'session_id': '${session_id}', 'cwd': '${cwd}'}}
+        def binding(event):
+            return {**bind_hook, 'input': {**bind_hook['input'], 'hook_event_name': event}}
+
         for event in ['SessionStart', 'UserPromptSubmit']:
-            settings['hooks'][event] = [{'hooks': [bind_hook]}]
+            settings['hooks'][event] = [{'hooks': [binding(event)]}]
         settings['hooks']['SessionStart'][0]['hooks'].insert(0, capture_hook)
         settings['hooks']['SessionEnd'] = [{'hooks': [{**bind_hook, 'tool': 'end_claude_session'}]}]
-        settings['hooks']['PreToolUse'] = [{'matcher': '^mcp__interlink__', 'hooks': [bind_hook]}]
+        settings['hooks']['PreToolUse'] = [{'matcher': '^mcp__interlink__', 'hooks': [binding('PreToolUse')]}]
         if policy == 'refuse':
             settings['crossSessionInbound'] = 'refuse'
         (work / 'settings.json').write_text(json.dumps(settings))
@@ -222,6 +225,8 @@ def run(policy):
         claude.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': 'Reply OK.'}}) + '\n')
         claude.stdin.flush()
         wait_for(lambda: any(e.get('type') == 'result' for e in events), 'initial Claude turn completed')
+        guidance = 'Interlink session summary:'
+        assert json.dumps(REQUESTS[-1]['messages']).count(guidance) == 1, 'missing summary guidance'
         wait_for(lambda: any(a['session']['session_id'] == sid for a in (roster() or {}).get('roster', [])),
                  'Claude connected to real MCP without a compatibility shim')
         before = len(REQUESTS)
@@ -250,6 +255,7 @@ def run(policy):
             calls = len(REQUESTS)
             time.sleep(4)
             assert len(REQUESTS) == calls, 'idle session started extra model requests'
+            assert json.dumps(REQUESTS[-1]['messages']).count(guidance) == 1, 'summary reminder repeated'
             assert not (work / 'state/interlink/inbox' / (sid + '.jsonl')).exists()
             print('PASS: accelerated Stop hook stays disabled, no idle renewals or legacy inbox', flush=True)
         if policy == 'default':
@@ -278,6 +284,7 @@ def run(policy):
             sender.tool('send_message', {'to': 'self', 'session': new_id, 'text': new_marker})
             wait_for(lambda: any(new_marker in json.dumps(r['messages']) for r in REQUESTS),
                      'new chat receives its own message after /clear')
+            assert json.dumps(REQUESTS[-1]['messages']).count(guidance) == 1, 'fresh chat needs its own summary guidance'
             assert not any(old_marker in json.dumps(r['messages']) for r in REQUESTS)
             print('PASS: old chat messages do not enter the new conversation', flush=True)
             wait_for(lambda: any(r['message']['text'] == new_marker and r['state'] == 'receiver_acknowledged'
@@ -299,6 +306,9 @@ def run(policy):
                      '--resume rebinds the original conversation')
             wait_for(lambda: any(old_marker in json.dumps(r['messages']) for r in REQUESTS),
                      'resumed conversation receives its pending message')
+            # Resumed history retains the original reminder; the new runtime adds one.
+            assert json.dumps(REQUESTS[-1]['messages']).count(guidance) == 2, 'missing resume guidance'
+            print('PASS: summary guidance appears once on binding, /clear, and resume', flush=True)
         assert claude.poll() is None
     finally:
         for process in reversed(processes):

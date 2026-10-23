@@ -279,6 +279,12 @@ async fn codex_binding_cross_host_delivery_and_retry() {
                 .await,
         );
     }
+    summary_guidance(
+        &mut codex,
+        "bind_codex_session",
+        json!({"thread_id":CODEX_THREAD}),
+    )
+    .await;
     let rebound = codex
         .tool("bind_codex_session", json!({"thread_id":OTHER_THREAD}))
         .await;
@@ -445,6 +451,33 @@ fn tool_text(reply: &Value) -> &str {
     reply["result"]["content"][0]["text"].as_str().unwrap()
 }
 
+async fn summary_guidance(client: &mut Client, tool: &str, mut args: Value) {
+    for (index, event) in [
+        "UserPromptSubmit",
+        "PreToolUse",
+        "SessionStart",
+        "UserPromptSubmit",
+    ]
+    .iter()
+    .enumerate()
+    {
+        args["hook_event_name"] = json!(event);
+        let reply = client.tool(tool, args.clone()).await;
+        success(&reply);
+        let output: Value = serde_json::from_str(tool_text(&reply)).unwrap();
+        if index == 0 {
+            assert_eq!(output["hookSpecificOutput"]["hookEventName"], *event);
+            let context = output["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap();
+            assert!(context.contains("set_summary"));
+            assert!(context.contains("only when you judge"));
+        } else {
+            assert_eq!(output, json!({}), "repeated guidance from {event}");
+        }
+    }
+}
+
 async fn bind(client: &mut Client, thread: &str) {
     success(
         &client
@@ -577,6 +610,12 @@ async fn socket_chat_switch_isolates_mailboxes_and_resume_recovers_unread() {
     let socket_path = dir.path().join("same-process.sock");
     let listener = UnixListener::bind(&socket_path).unwrap();
     let mut client = Client::start_socket(dir.path(), &url, "chat-a", &socket_path).await;
+    summary_guidance(
+        &mut client,
+        "bind_claude_session",
+        json!({"session_id":"chat-a"}),
+    )
+    .await;
     let route_a = format!("{}#chat-a", receiver.id().to_b64());
     let route_b = format!("{}#chat-b", receiver.id().to_b64());
     broker
@@ -616,6 +655,12 @@ async fn socket_chat_switch_isolates_mailboxes_and_resume_recovers_unread() {
             .tool("bind_claude_session", json!({"session_id":"chat-b"}))
             .await,
     );
+    summary_guidance(
+        &mut client,
+        "bind_claude_session",
+        json!({"session_id":"chat-b"}),
+    )
+    .await;
     let empty = client.tool("receive_messages", json!({})).await;
     assert!(!tool_text(&empty).contains("a-before-clear"));
     assert!(!tool_text(&empty).contains("a-during-clear"));
@@ -653,6 +698,12 @@ async fn socket_chat_switch_isolates_mailboxes_and_resume_recovers_unread() {
             .tool("bind_claude_session", json!({"session_id":"chat-a"}))
             .await,
     );
+    summary_guidance(
+        &mut client,
+        "bind_claude_session",
+        json!({"session_id":"chat-a"}),
+    )
+    .await;
     drained(&broker, &route_a).await;
     let frame = socket_frame(&listener).await;
     assert_eq!(frame["session_id"], "chat-a");

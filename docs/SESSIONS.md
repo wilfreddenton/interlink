@@ -56,6 +56,14 @@ unpaired identities. Each entry shows the session ID, working directory, git-roo
 label, summary, and presence. `set_summary(summary)` updates the work description and
 announces it.
 
+The Claude plugin and Codex sample binding hooks supply summary guidance once
+per active session in an MCP process, including after a restart or switching back
+to a resumed Claude conversation. Later prompt and tool hooks stay quiet. Once
+the agent understands its task, it can set a short description and decide when a
+change in focus or expertise warrants an update. There is no per-turn requirement,
+timer, idle wake-up, or stop check for summaries. Summaries are held in memory and
+start empty when a session runtime is recreated.
+
 ## Upgrading from session titles
 
 Version 0.11.0 removes session titles, including manual overrides,

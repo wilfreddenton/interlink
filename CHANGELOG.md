@@ -31,6 +31,9 @@ All notable changes to this project are documented here. The format is based on
   Update the plugin hooks with the MCP binary and send an initial prompt.
 
 ### Added
+- Binding hooks give Claude and Codex one reminder to describe their work with
+  `set_summary`, helping other sessions find relevant collaborators through
+  `discover`. Agents choose when updates are useful; no per-turn or idle checks.
 - A Claude 2.1.308 host fixture covers socket wake-up, real MCP fetch/acknowledgement,
   inbound refusal, and disabled listener renewal using local model responses.
 - Live Claude/Codex validation uses checkout binaries, waits for idle hosts before

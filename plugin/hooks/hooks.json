@@ -33,7 +33,8 @@
             "tool": "bind_claude_session",
             "input": {
               "session_id": "${session_id}",
-              "cwd": "${cwd}"
+              "cwd": "${cwd}",
+              "hook_event_name": "SessionStart"
             }
           }
         ]
@@ -63,7 +64,8 @@
             "tool": "bind_claude_session",
             "input": {
               "session_id": "${session_id}",
-              "cwd": "${cwd}"
+              "cwd": "${cwd}",
+              "hook_event_name": "UserPromptSubmit"
             }
           }
         ]
@@ -79,7 +81,8 @@
             "tool": "bind_claude_session",
             "input": {
               "session_id": "${session_id}",
-              "cwd": "${cwd}"
+              "cwd": "${cwd}",
+              "hook_event_name": "PreToolUse"
             }
           }
         ]

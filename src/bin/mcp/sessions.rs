@@ -1,6 +1,7 @@
 //! Claude may replace its conversation while keeping this MCP connection alive.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -78,7 +79,7 @@ impl ClaudeSessions {
         id: &str,
         cwd: Option<&str>,
         peer: Peer<RoleServer>,
-    ) -> Result<()> {
+    ) -> Result<Arc<Inner>> {
         if id.is_empty()
             || id.len() > 128
             || !id
@@ -88,11 +89,10 @@ impl ClaudeSessions {
             bail!("expected the owning Claude session ID from a local lifecycle hook");
         }
         let mut active = self.active.write().await;
-        if active
-            .as_ref()
-            .is_some_and(|runtime| runtime.inner.session.read().unwrap().session_id == id)
+        if let Some(runtime) = active.as_ref()
+            && runtime.inner.session.read().unwrap().session_id == id
         {
-            return Ok(());
+            return Ok(runtime.inner.clone());
         }
         if let Some(mut old) = active.take() {
             old.stop(true).await?;
@@ -120,6 +120,7 @@ impl ClaudeSessions {
                 cwd,
                 summary: String::new(),
             }),
+            summary_guidance_sent: AtomicBool::new(false),
             sticky: RwLock::new(HashMap::new()),
         });
         let sink = if self.channels {
@@ -133,8 +134,8 @@ impl ClaudeSessions {
         } else {
             Sink::Inbox(inner.clone())
         };
-        *active = Some(SessionRuntime::start(inner, Arc::new(sink)));
-        Ok(())
+        *active = Some(SessionRuntime::start(inner.clone(), Arc::new(sink)));
+        Ok(inner)
     }
 
     pub(super) async fn end(&self, id: Option<&str>) -> Result<()> {
