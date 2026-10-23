@@ -23,6 +23,67 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:interlink:interlink",
+            "tool": "bind_claude_session",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}"
+            }
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:interlink:interlink",
+            "tool": "end_claude_session",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}"
+            }
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:interlink:interlink",
+            "tool": "bind_claude_session",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}"
+            }
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__plugin_interlink_interlink__",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:interlink:interlink",
+            "tool": "bind_claude_session",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}"
+            }
+          }
+        ]
+      }
     ]
   }
 }

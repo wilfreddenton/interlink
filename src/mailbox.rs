@@ -215,6 +215,17 @@ impl Mailbox {
         self.reserve_notice_at(now_ms())
     }
 
+    /// After a conversation ends, its host queue no longer represents pending work.
+    /// Keep the bodies so resuming that conversation can issue a fresh wake-up.
+    pub fn end_session(&self) -> Result<()> {
+        let _lock = lock(&self.path.with_extension("lock"))?;
+        let mut data = self.load()?;
+        if data.notice.take().is_some() {
+            self.save(&data)?;
+        }
+        Ok(())
+    }
+
     /// Call while holding the notifier lock when replacing the Stop listener.
     pub fn retry_legacy_inbox_notice(&self) -> Result<()> {
         let _lock = lock(&self.path.with_extension("lock"))?;

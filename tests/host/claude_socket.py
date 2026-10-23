@@ -5,6 +5,8 @@ import os
 import queue
 import re
 import signal
+import shlex
+import sys
 import socket
 import subprocess
 import threading
@@ -188,12 +190,25 @@ def run(policy):
         settings = {'hooks': {'Stop': [{'hooks': [{'type': 'command',
                     'command': str(BIN / 'interlink-mcp') + ' wait --renew-after-secs 1',
                     'async': True, 'asyncRewake': True, 'timeout': 30}]}]}}
+        capture = work / 'capture-socket.py'
+        socket_env = work / 'socket-env.json'
+        capture.write_text('import json, os\nfrom pathlib import Path\n'
+                           + 'Path(' + repr(str(socket_env)) + ').write_text(json.dumps({k: os.environ.get(k) for k in '
+                           + repr(['CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN']) + '}))\n')
+        capture_hook = {'type': 'command', 'command': shlex.quote(sys.executable) + ' ' + shlex.quote(str(capture))}
+        bind_hook = {'type': 'mcp_tool', 'server': 'interlink', 'tool': 'bind_claude_session',
+                     'input': {'session_id': '${session_id}', 'cwd': '${cwd}'}}
+        for event in ['SessionStart', 'UserPromptSubmit']:
+            settings['hooks'][event] = [{'hooks': [bind_hook]}]
+        settings['hooks']['SessionStart'][0]['hooks'].insert(0, capture_hook)
+        settings['hooks']['SessionEnd'] = [{'hooks': [{**bind_hook, 'tool': 'end_claude_session'}]}]
+        settings['hooks']['PreToolUse'] = [{'matcher': '^mcp__interlink__', 'hooks': [bind_hook]}]
         if policy == 'refuse':
             settings['crossSessionInbound'] = 'refuse'
         (work / 'settings.json').write_text(json.dumps(settings))
         sid = str(uuid.uuid4())
         claude = launch(['claude', '--print', '--input-format', 'stream-json', '--output-format', 'stream-json',
-                         '--verbose', '--no-session-persistence', '--session-id', sid,
+                         '--verbose', '--session-id', sid,
                          '--setting-sources', '', '--settings', work / 'settings.json',
                          '--strict-mcp-config', '--mcp-config', json.dumps(mcp), '--tools', '',
                          '--allowedTools', 'mcp__interlink__receive_messages', 'mcp__interlink__acknowledge_messages',
@@ -237,6 +252,53 @@ def run(policy):
             assert len(REQUESTS) == calls, 'idle session started extra model requests'
             assert not (work / 'state/interlink/inbox' / (sid + '.jsonl')).exists()
             print('PASS: accelerated Stop hook stays disabled, no idle renewals or legacy inbox', flush=True)
+        if policy == 'default':
+            claude.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': '/clear'}}) + '\n')
+            claude.stdin.flush()
+            new_id = wait_for(lambda: next((e['session_id'] for e in events
+                                           if e.get('session_id') and e['session_id'] != sid), None),
+                              '/clear creates a different Claude conversation')
+            wait_for(lambda: any(a['session']['session_id'] == new_id for a in (roster() or {}).get('roster', [])),
+                     'SessionStart binds the new mailbox without a model prompt')
+            assert not any(a['session']['session_id'] == sid for a in roster()['roster'])
+            connection_info = json.loads(socket_env.read_text())
+            calls = len(REQUESTS)
+            with socket.socket(socket.AF_UNIX) as stale:
+                stale.connect(connection_info['CLAUDE_CODE_MESSAGING_SOCKET'])
+                stale.sendall((json.dumps({'type': 'auth', 'token': connection_info['CLAUDE_CODE_MESSAGING_TOKEN']}) + '\n'
+                               + json.dumps({'type': 'user', 'session_id': sid,
+                                             'message': {'role': 'user', 'content': 'STALE-CHAT-FRAME'}}) + '\n').encode())
+                stale.shutdown(socket.SHUT_WR)
+            wait_for(lambda: 'session_id mismatch' in (work / 'claude.debug').read_text(),
+                     'Claude rejects an in-flight frame addressed to the old chat')
+            assert len(REQUESTS) == calls, 'stale socket frame started a turn in the new chat'
+            old_marker = 'OLD-CHAT-' + uuid.uuid4().hex
+            sender.tool('send_message', {'to': 'self', 'session': sid, 'text': old_marker})
+            new_marker = 'NEW-CHAT-' + uuid.uuid4().hex
+            sender.tool('send_message', {'to': 'self', 'session': new_id, 'text': new_marker})
+            wait_for(lambda: any(new_marker in json.dumps(r['messages']) for r in REQUESTS),
+                     'new chat receives its own message after /clear')
+            assert not any(old_marker in json.dumps(r['messages']) for r in REQUESTS)
+            print('PASS: old chat messages do not enter the new conversation', flush=True)
+            wait_for(lambda: any(r['message']['text'] == new_marker and r['state'] == 'receiver_acknowledged'
+                                 for path in (work / 'state/interlink/mailbox').glob('**/' + new_id + '.json')
+                                 for r in json.loads(path.read_text()).get('records', [])),
+                     'new chat finishes acknowledging its own message')
+            claude.stdin.close()
+            claude.wait(timeout=10)
+            claude = launch(['claude', '--print', '--input-format', 'stream-json', '--output-format', 'stream-json',
+                             '--verbose', '--resume', sid,
+                             '--setting-sources', '', '--settings', work / 'settings.json',
+                             '--strict-mcp-config', '--mcp-config', json.dumps(mcp), '--tools', '',
+                             '--allowedTools', 'mcp__interlink__receive_messages', 'mcp__interlink__acknowledge_messages',
+                             '--model', 'claude-sonnet-4-6', '--debug-file', work / 'resume.debug'], 'claude-resume')
+            threading.Thread(target=read_events, daemon=True).start()
+            claude.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': 'Reply OK.'}}) + '\n')
+            claude.stdin.flush()
+            wait_for(lambda: any(a['session']['session_id'] == sid for a in (roster() or {}).get('roster', [])),
+                     '--resume rebinds the original conversation')
+            wait_for(lambda: any(old_marker in json.dumps(r['messages']) for r in REQUESTS),
+                     'resumed conversation receives its pending message')
         assert claude.poll() is None
     finally:
         for process in reversed(processes):
@@ -247,6 +309,7 @@ def run(policy):
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
+        (work / 'socket-env.json').unlink(missing_ok=True)
         provider.shutdown()
         provider.server_close()
         for log in logs:

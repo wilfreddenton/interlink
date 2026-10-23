@@ -38,7 +38,7 @@ plugin = WORK / 'plugin'
 (plugin / 'hooks').mkdir(exist_ok=True)
 (plugin / '.claude-plugin/plugin.json').write_text(json.dumps(json.loads((ROOT / 'plugin/.claude-plugin/plugin.json').read_text())))
 hooks = json.loads((ROOT / 'plugin/hooks/hooks.json').read_text())
-(plugin / 'hooks/hooks.json').write_text(json.dumps({'hooks': {'PostToolUse': hooks['hooks']['PostToolUse']}}))
+(plugin / 'hooks/hooks.json').write_text(json.dumps({'hooks': {event: hooks['hooks'][event] for event in ['PostToolUse', 'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse']}}))
 key = WORK / 'id.key'
 if not key.exists():
     subprocess.run([str(ROOT / 'target/debug/interlink-keygen'), '--out', str(key)], check=True, stdout=subprocess.DEVNULL)
@@ -52,7 +52,7 @@ bus = subprocess.Popen([str(ROOT / 'target/debug/interlink-bus'), '--addr', f'12
 (plugin / '.mcp.json').write_text(json.dumps({'mcpServers': {'interlink': {
     'command': str(ROOT / 'target/debug/interlink-mcp'),
     'args': ['--key', str(key), '--peers', str(WORK/'peers.json'), '--url', url],
-    'env': {'XDG_STATE_HOME': str(WORK/'state'), 'INTERLINK_CHANNELS':'0'}
+    'env': {'XDG_STATE_HOME': str(WORK/'state'), 'INTERLINK_CHANNELS':'0', 'INTERLINK_CLAUDE_SESSION_HOOKS':'true'}
 }}}))
 (WORK / 'settings.json').write_text(json.dumps(settings))
 env = os.environ.copy()

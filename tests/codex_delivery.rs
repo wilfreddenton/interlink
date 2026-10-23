@@ -135,6 +135,15 @@ impl Client {
         client
             .write(json!({"jsonrpc":"2.0", "method":"notifications/initialized"}))
             .await;
+        if socket.is_some() {
+            let unbound = client.tool("get_my_session_id", json!({})).await;
+            assert!(unbound.get("error").is_some());
+            success(
+                &client
+                    .tool("bind_claude_session", json!({"session_id": session}))
+                    .await,
+            );
+        }
         client
     }
 
@@ -532,7 +541,7 @@ async fn inbox_survives_server_restart_until_hook_consumes_it() {
     server.abort();
 }
 
-async fn socket_message(listener: &UnixListener) -> String {
+async fn socket_frame(listener: &UnixListener) -> Value {
     timeout(Duration::from_secs(10), async {
         let (stream, _) = listener.accept().await.unwrap();
         let mut lines = BufReader::new(stream).lines();
@@ -541,10 +550,134 @@ async fn socket_message(listener: &UnixListener) -> String {
         let message: Value =
             serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
         assert!(lines.next_line().await.unwrap().is_none());
-        message["message"]["content"].as_str().unwrap().to_string()
+        message
     })
     .await
     .unwrap()
+}
+
+async fn socket_message(listener: &UnixListener) -> String {
+    socket_frame(listener).await["message"]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn socket_chat_switch_isolates_mailboxes_and_resume_recovers_unread() {
+    let dir = tempfile::tempdir().unwrap();
+    let receiver = AgentKey::generate().unwrap();
+    let sender = AgentKey::generate().unwrap();
+    identity(dir.path(), &receiver, &sender);
+    let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = broker.clone().router();
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let socket_path = dir.path().join("same-process.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let mut client = Client::start_socket(dir.path(), &url, "chat-a", &socket_path).await;
+    let route_a = format!("{}#chat-a", receiver.id().to_b64());
+    let route_b = format!("{}#chat-b", receiver.id().to_b64());
+    broker
+        .enqueue(
+            &route_a,
+            json!(sender.sign(receiver.id(), "a-before-clear", now_ms(), "a1")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    drained(&broker, &route_a).await;
+    let old_frame = socket_frame(&listener).await;
+    assert_eq!(old_frame["session_id"], "chat-a");
+    success(
+        &client
+            .tool("end_claude_session", json!({"session_id":"chat-a"}))
+            .await,
+    );
+    assert!(
+        client
+            .tool("receive_messages", json!({}))
+            .await
+            .get("error")
+            .is_some()
+    );
+    assert!(broker.roster(now_ms()).is_empty());
+    broker
+        .enqueue(
+            &route_a,
+            json!(sender.sign(receiver.id(), "a-during-clear", now_ms(), "a2")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    success(
+        &client
+            .tool("bind_claude_session", json!({"session_id":"chat-b"}))
+            .await,
+    );
+    let empty = client.tool("receive_messages", json!({})).await;
+    assert!(!tool_text(&empty).contains("a-before-clear"));
+    assert!(!tool_text(&empty).contains("a-during-clear"));
+    // A delayed end event from A must not tear down B.
+    success(
+        &client
+            .tool("end_claude_session", json!({"session_id":"chat-a"}))
+            .await,
+    );
+    assert!(tool_text(&client.tool("get_my_session_id", json!({})).await).contains("chat-b"));
+    broker
+        .enqueue(
+            &route_b,
+            json!(sender.sign(receiver.id(), "b-only", now_ms(), "b1")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    drained(&broker, &route_b).await;
+    let frame = socket_frame(&listener).await;
+    assert_eq!(frame["session_id"], "chat-b");
+    assert_eq!(broker.depth(&route_a).await.unwrap(), 1);
+    let reply = client
+        .tool(
+            "receive_messages",
+            json!({"notification_id": notice_id(frame["message"]["content"].as_str().unwrap())}),
+        )
+        .await;
+    assert!(tool_text(&reply).contains("b-only"));
+    assert!(!tool_text(&reply).contains("a-before-clear"));
+    client.acknowledge(&reply).await;
+    // A prompt/pre-tool binding also handles a missed SessionEnd event.
+    success(
+        &client
+            .tool("bind_claude_session", json!({"session_id":"chat-a"}))
+            .await,
+    );
+    drained(&broker, &route_a).await;
+    let frame = socket_frame(&listener).await;
+    assert_eq!(frame["session_id"], "chat-a");
+    let reply = client
+        .tool(
+            "receive_messages",
+            json!({"notification_id": notice_id(frame["message"]["content"].as_str().unwrap())}),
+        )
+        .await;
+    assert!(tool_text(&reply).contains("a-before-clear"));
+    assert!(tool_text(&reply).contains("a-during-clear"));
+    assert!(!tool_text(&reply).contains("b-only"));
+    client.acknowledge(&reply).await;
+    success(
+        &client
+            .tool("bind_claude_session", json!({"session_id":"chat-a"}))
+            .await,
+    );
+    assert!(
+        timeout(Duration::from_millis(1300), listener.accept())
+            .await
+            .is_err()
+    );
+    client.close().await;
+    server.abort();
 }
 
 #[tokio::test]

@@ -23,6 +23,7 @@ pub(super) enum Sink {
     Socket {
         socket: ClaudeSocket,
         inbox: PathBuf,
+        session_id: String,
     },
 }
 
@@ -41,7 +42,12 @@ impl SocketInbox {
         }
     }
 
-    pub(super) async fn poll(&mut self, socket: &ClaudeSocket, mailbox: &Mailbox) -> Result<()> {
+    pub(super) async fn poll(
+        &mut self,
+        socket: &ClaudeSocket,
+        session_id: &str,
+        mailbox: &Mailbox,
+    ) -> Result<()> {
         if self.reader.is_none() && self.path.try_exists()? {
             let inbox = Inbox::open(&self.path)?;
             if let Some(lock) = inbox.listener_lock()? {
@@ -53,7 +59,7 @@ impl SocketInbox {
         if let Some((inbox, _lock)) = &self.reader {
             let batch = inbox.read_one()?;
             if let Some(line) = batch.lines.first() {
-                socket.deliver(&render_inbox_line(line)).await?;
+                socket.deliver(session_id, &render_inbox_line(line)).await?;
                 let record = serde_json::from_str::<Value>(line).ok();
                 // A legacy mailbox wake-up keeps its ID when forwarded. Mark it
                 // sent before allowing migration to reissue any consumed notice.
@@ -207,11 +213,16 @@ impl Sink {
         in_reply_to: Option<&str>,
     ) -> Result<()> {
         match self {
-            Sink::Socket { socket, .. } => {
+            Sink::Socket {
+                socket, session_id, ..
+            } => {
                 let mut record = meta_map(sender, msg_id, task_id, status, in_reply_to);
                 record.insert("content".into(), json!(content));
                 socket
-                    .deliver(&render_inbox_line(&Value::Object(record).to_string()))
+                    .deliver(
+                        session_id,
+                        &render_inbox_line(&Value::Object(record).to_string()),
+                    )
                     .await
             }
             Sink::Channel(peer) => {

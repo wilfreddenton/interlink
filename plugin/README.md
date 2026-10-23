@@ -93,6 +93,12 @@ Hosts without a socket retain the legacy listener. They need
 `CLAUDE_CODE_SESSION_ID` and `asyncRewake`; neither path requires the Claude
 channel feature. MCP and hooks must be allowed by the host configuration.
 
+- `SessionStart`, `UserPromptSubmit`, and `PreToolUse`: bind Interlink to the
+  current Claude conversation. Send an initial prompt after launch; Claude skips
+  MCP-tool SessionStart hooks at startup. `/clear` then binds a fresh mailbox and
+  `/resume` reopens the resumed conversation's mailbox. Update these hooks with
+  the binary. Socket delivery remains inactive until binding succeeds.
+- `SessionEnd`: stop the old conversation's workers and retain its mailbox.
 - `Stop`: runs `interlink-mcp wait` asynchronously, exiting immediately in socket
   or native-channel mode. In legacy inbox mode, verified messages are drained
   from the durable local inbox; exit 2 wakes the host. An OS file lock limits the

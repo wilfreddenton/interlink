@@ -1,7 +1,8 @@
 # Sessions and routing
 
-Each Claude Code or supported Codex CLI session has one `interlink-mcp` process
-and its own broker address, `public-key#session_id`. Multiple sessions can share
+Each Claude Code conversation or supported Codex CLI thread has its own broker
+address, `public-key#session_id`. Claude may reuse one MCP process across conversations.
+Multiple sessions can share
 an identity and peer-policy file without sharing a polled inbox or a redb writer.
 
 ## Session identity
@@ -9,8 +10,8 @@ an identity and peer-policy file without sharing a polled inbox or a redb writer
 `get_my_session_id()` returns `{"session_id":"..."}` for the current MCP session.
 It reads local state, so it works even when the broker is unavailable. On Codex,
 it reports a setup error until the trusted binding hook supplies the owning
-thread UUID; it never returns a provisional ID. On Claude it returns the effective
-Interlink ID, including any configured session override.
+thread UUID; it never returns a provisional ID. Claude socket delivery also waits
+for a local lifecycle hook to supply the current conversation ID.
 
 Give this ID to a newly launched agent in its initial prompt so it can address a
 ready message back to you. The new agent can use the same tool to include its own
@@ -19,15 +20,29 @@ ID; agents under different identities use their configured peer names.
 
 | Host | ID source | When it registers |
 |---|---|---|
-| Claude Code | `--session`, then `INTERLINK_SESSION`, then `CLAUDE_CODE_SESSION_ID`, otherwise a generated ID | Server startup |
+| Claude socket or plugin session hooks | Current conversation ID from `bind_claude_session` | After successful binding |
+| Standalone Claude legacy delivery without session hooks | `--session`, then `INTERLINK_SESSION`, then `CLAUDE_CODE_SESSION_ID`, otherwise a generated ID | Server startup |
 | Codex CLI | Full thread UUID passed to `bind_codex_session` by trusted local hooks | After successful binding |
 
 A Codex MCP instance binds once. Rebinding the same UUID is harmless; another
 UUID is rejected. The Claude session override is not a substitute for Codex
-binding. An unbound Codex instance does not announce or poll.
+binding. An unbound instance does not announce or poll.
 For now, send one initial user prompt to trigger binding. Registration before
 the first turn remains a tracked improvement; see the
 [Codex startup limitation](../codex/README.md#known-limitation-registration-before-the-first-turn).
+
+Claude's plugin uses `SessionStart`, `UserPromptSubmit`, and `PreToolUse` hooks to
+bind the current conversation, and `SessionEnd` to stop its workers. At launch,
+Claude skips MCP-tool SessionStart hooks; the first prompt performs the binding.
+After `/clear`, SessionStart binds the new ID and a fresh mailbox without another
+prompt. `/resume` selects the existing mailbox for the resumed ID. No messages
+are moved between mailboxes. Socket frames carry the destination conversation ID,
+so Claude rejects a frame for the old chat after switching. Updating the binary
+without updating the plugin hooks is insufficient.
+
+`INTERLINK_CLAUDE_SESSION_HOOKS=true` enables the same lifecycle for legacy inbox
+or native-channel delivery; the plugin sets it. Socket delivery always requires
+binding. A configured `INTERLINK_SESSION` does not override a host hook's ID.
 
 A restart within the same host session can recover its address. A genuinely new
 session has a new ID; old queued messages are not automatically migrated to it.
@@ -96,7 +111,9 @@ See [pairing](DISCOVERY.md).
 ## State and recovery
 
 The ordinary outbox, outbound log, gate replay set, and sticky routes are in memory.
-They survive suspension with the process, but are lost when it restarts.
+They survive suspension with the process, but are lost when it restarts or the
+Claude conversation ends or switches. In particular, outbound jobs not yet
+accepted by the broker are not recovered by resuming the old conversation.
 `INTERLINK_AGENT_DB` / `--db` on the agent are accepted but ignored.
 
 Separate files persist peer policy, pairing state, the shared inbound mailbox

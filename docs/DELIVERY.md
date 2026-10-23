@@ -117,10 +117,27 @@ Interlink 0.12.0 prefers the local inbox socket supplied by Claude as
 `CLAUDE_CODE_MESSAGING_SOCKET`, authenticating with the owning session's
 `CLAUDE_CODE_MESSAGING_TOKEN`. Both are supplied to the MCP process on the tested
 Claude Code 2.1.308 host. Interlink opens a fresh connection for each notification,
-sends a JSONL auth frame followed by a user-message frame containing an attributed
-Interlink notice, and closes its write side. The combined connect/write/shutdown
+sends a JSONL auth frame followed by a user-message frame containing the destination
+`session_id` and an attributed Interlink notice, and closes its write side. The combined connect/write/shutdown
 operation has a three-second timeout. Unix uses a domain socket; Windows uses a
 local named pipe. The Windows path has not been host-validated.
+
+Socket delivery requires the plugin's local lifecycle hooks. Interlink waits for
+`bind_claude_session` before registering or receiving, including when the MCP
+startup environment contains a stale session ID. Claude skips MCP-tool
+SessionStart hooks at launch, so send one initial prompt. Later SessionStart
+hooks, prompt hooks, and pre-tool hooks provide the current conversation ID.
+SessionEnd stops the old workers; a binding change also handles a missed end
+hook. Each session uses a fresh runtime and its own stored mailbox. Tool calls
+hold that runtime fixed until they finish, and new calls wait through a switch.
+A missing binding produces a setup error instead of accessing another mailbox.
+
+`/clear` selects a new mailbox. Resuming selects the old mailbox without moving
+messages between them. On an explicit conversation end, outstanding ordinary
+notices are retired while unread bodies remain, allowing a fresh wake-up on
+resume. An MCP reconnect within the same conversation retains its outstanding
+notice. The socket's destination ID check rejects a late frame for a different
+chat even if the socket path and token remain unchanged.
 
 The Interlink broker remains independently configurable with `INTERLINK_URL`,
 including a broker on a trusted private network. Only delivery from the local
@@ -327,7 +344,11 @@ Code 2.1.278 with local response fixtures, not production models:
 The socket fixture uses Claude 2.1.308 and the real Interlink binaries without a
 compatibility shim. It verifies broker-to-socket delivery, MCP fetch and
 acknowledgement, refusal without consumption, and an accelerated Stop hook that
-stays disabled in socket mode. Model responses come from a local fixture, and the
+stays disabled in socket mode. It also runs `/clear` in the real host, verifies a
+fresh mailbox, injects a stale-ID socket frame and observes Claude rejecting it,
+then uses `claude --resume <id>` to recover the original mailbox. Interactive
+`/resume` is unavailable in the headless runner; same-process A/B/A rebinding is
+covered by a process regression. Model responses come from a local fixture, and the
 broker runs in a separate process on the same machine. It does not validate an
 overnight idle interval, cross-machine networking, or Windows named pipes.
 

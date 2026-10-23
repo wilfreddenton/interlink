@@ -13,6 +13,7 @@ use tokio::net::UnixStream;
 use tokio::net::windows::named_pipe::ClientOptions;
 use tokio::time::timeout;
 
+#[derive(Clone)]
 pub struct ClaudeSocket {
     path: PathBuf,
     token: String,
@@ -54,11 +55,12 @@ impl ClaudeSocket {
         Ok(Some(Self { path, token }))
     }
 
-    pub async fn deliver(&self, text: &str) -> Result<()> {
+    pub async fn deliver(&self, session_id: &str, text: &str) -> Result<()> {
         let frames = format!(
             "{}\n{}\n",
             json!({"type": "auth", "token": self.token}),
-            json!({"type": "user", "message": {"role": "user", "content": text}}),
+            json!({"type": "user", "session_id": session_id,
+                "message": {"role": "user", "content": text}}),
         );
         // Neither a successful write nor EOF is a host/read receipt. Keep the
         // durable mailbox until its normal fetch and acknowledgement flow completes.
@@ -119,7 +121,7 @@ mod tests {
         let client = ClaudeSocket::select("socket", Some(path.clone()), Some("test-secret".into()))
             .unwrap()
             .unwrap();
-        assert!(client.deliver("not connected").await.is_err());
+        assert!(client.deliver("chat-a", "not connected").await.is_err());
         for _ in 0..2 {
             let listener = UnixListener::bind(&path).unwrap();
             let read = tokio::spawn(async move {
@@ -132,9 +134,13 @@ mod tests {
                 assert_eq!(auth, json!({"type":"auth","token":"test-secret"}));
                 assert_eq!(message["message"]["content"], "quotes \" and\nnewlines");
                 assert_eq!(message["type"], "user");
+                assert_eq!(message["session_id"], "chat-a");
                 assert!(lines.next_line().await.unwrap().is_none());
             });
-            client.deliver("quotes \" and\nnewlines").await.unwrap();
+            client
+                .deliver("chat-a", "quotes \" and\nnewlines")
+                .await
+                .unwrap();
             timeout(Duration::from_secs(3), read)
                 .await
                 .unwrap()

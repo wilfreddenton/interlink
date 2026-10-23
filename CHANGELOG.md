@@ -25,6 +25,11 @@ All notable changes to this project are documented here. The format is based on
 - Persist socket pairing notices before broker acknowledgement and deliver them
   in the background, so an unavailable socket cannot block ordinary broker intake.
 
+- Bind Claude delivery to the current conversation through lifecycle hooks.
+  `/clear` selects a fresh mailbox; resuming reopens the existing mailbox. Socket
+  frames include `session_id`, preventing late delivery into a different chat.
+  Update the plugin hooks with the MCP binary and send an initial prompt.
+
 ### Added
 - A Claude 2.1.308 host fixture covers socket wake-up, real MCP fetch/acknowledgement,
   inbound refusal, and disabled listener renewal using local model responses.
