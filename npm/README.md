@@ -38,6 +38,9 @@ Interlink 0.12.0 prefers Claude's authenticated local messaging socket and disab
 the Stop listener when that socket is available. Update the plugin and ensure
 both the server and Stop hook use the new `interlink-mcp`, then restart Claude.
 The `interlinked` launcher has been removed; launch `claude` directly.
+Version 0.12.1 adds bounded recovery when Claude loses a delivered notice ID.
+Update the plugin and MCP binary together, then restart Claude. Outstanding
+notices lost before prompt delivery still require explicit recovery.
 
 Node 18 or newer is required. `postinstall` fetches the release asset for Linux
 x64/arm64, macOS arm64, or Windows x64. Other platforms need a source build.

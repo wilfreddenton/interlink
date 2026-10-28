@@ -56,10 +56,10 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.12.0 or newer:
+Install version 0.12.1 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.12.0 --locked
+cargo install interlink-mcp --version 0.12.1 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).

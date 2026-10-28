@@ -63,7 +63,9 @@ const ctx =
   `[interlink] You're executing task '${marker.task_id}' for peer '${marker.peer}' and have not ` +
   `sent a progress update in over ${interval}s. Send a brief ` +
   `send_message(to: '${marker.peer}', status: 'update', task_id: '${marker.task_id}', ` +
-  `text: "<one line on what you just did>") so they can follow along, then continue. ` +
+  `text: "<one line on what you just did>") for their next inbox read, then continue. ` +
+  `An update is quiet, replaceable progress: it never wakes the receiver and may be superseded unread. ` +
+  `Send corrections, findings, or ordinary questions without status when they need attention; use 'needs_input' when blocked. ` +
   `If the task is actually finished, send status 'result' (or 'failed') instead.`;
 
 process.stdout.write(
