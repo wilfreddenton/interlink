@@ -60,7 +60,10 @@ opening request. Echo it on progress, questions, answers, and the final result.
 If a substantial incoming task lacks an ID, adopt one and echo it in the first
 update so both sides can correlate subsequent messages.
 
-- Send `status: "update"` at milestones with a brief description of progress.
+- Use `status: "update"` only for quiet, replaceable progress requiring no action.
+  It never wakes the receiver and may be superseded before being read.
+- Omit `status` for corrections, review findings, ordinary questions, and answers
+  that need the peer's attention. Keep the task ID for correlation.
 - Send `status: "needs_input"` to the requester when a task needs a choice or
   answer. That session can ask the operator driving the work. Local permission
   requirements still belong to the local operator or host approval system.

@@ -27,6 +27,12 @@ and whether both the last update and last nudge are older than the interval. It
 then emits `additionalContext` asking the model to send an attributed progress
 update, and stamps `last-nudge`.
 
+The reminder explicitly describes `update` as quiet, replaceable progress. It
+never wakes the receiver and can be superseded unread. Corrections, findings,
+and ordinary questions that need attention should omit `status`; blocked work
+uses `needs_input`. No question-detection heuristic or timed progress wake-up is
+used.
+
 The hook derives its session ID from its JSON stdin payload. The server and hook
 must use the same state directory. `INTERLINK_PROGRESS_INTERVAL` is measured in
 seconds, defaults to 60, and is disabled by zero, negative, or invalid values.

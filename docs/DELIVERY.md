@@ -28,6 +28,21 @@ warning instead of another continuation. No timer or extra queue submission is
 used. This requires the updated, trusted hooks and does not recover an idle
 thread whose notice was lost before prompt delivery, or restart interrupted work.
 
+Interlink 0.12.1 adds the same bounded recovery for Claude notices observed by
+`UserPromptSubmit`. The plugin passes the prompt to `bind_claude_session` and
+calls `check_claude_inbox` at Stop. An exact notice match persists its started
+state outside model context, so losing the ID during compaction does not disable
+recovery. Manual fetch/acknowledgement can drain the inbox; Stop then retires the
+started notice. Claude's guard stays quiet when prompt delivery is unconfirmed,
+including when the host refused an inbound socket message. Stale session hooks
+cannot check or retire another conversation's notice.
+
+Update the Claude plugin and MCP binary together, then restart Claude. Older
+outstanding notices without a started marker still need explicit recovery if
+they were already lost. There is no automatic timeout for accepted notices and
+no extra idle polling or model turn. Ignoring the single recovery continuation
+leaves messages unread and produces a warning, rather than an endless loop.
+
 An inbox notice requires a tool call even when it is the only event in an idle
 conversation. Silence applies only after an empty fetch or acknowledgement; it
 does not mean skipping the inbox check. If a turn ends without fetching and
@@ -37,8 +52,9 @@ surfaced as blockers.
 
 There is at most one outstanding accepted wake-up per session. Once a host
 handoff succeeds, the notice stays outstanding until a fetch supplies its matching
-`notification_id`, even if manual reads or history have already consumed all its
-messages. New arrivals share that wake-up. Acknowledgement does not cancel a
+`notification_id`, or a Stop hook confirms a started notice's inbox is drained.
+Manual reads alone cannot retire a notice still queued behind a busy turn.
+New arrivals share that wake-up. Acknowledgement does not cancel a
 notice already queued in the host or allow another one to accumulate behind it.
 
 A matching fetch retires the wake-up and covers the current inbox, including
@@ -72,6 +88,12 @@ is still queued. Read and acknowledge the returned messages as usual. Previously
 queued notices, uncertain handoffs, and a crash between host acceptance and saving
 that result can still produce stale wake-ups; notifications are not exactly-once.
 
+Manual and stale-ID fetches report an outstanding notice's ID, handoff state, and
+whether a prompt hook observed it. These diagnostics share the fetched batch's
+snapshot; they do not retire the notice or acknowledge messages. A started notice
+can be retired with its ID. Unconfirmed prompt delivery is not proof that a notice
+is lost, so do not reset it during routine reads.
+
 `conversation_history(peer, consume=false)` is read-only. Prefer reading it and
 acknowledging exact receipts afterward. `consume=true` explicitly consumes exactly
 the returned inbound records before the response is sent. This shortcut can lose
@@ -83,6 +105,9 @@ older progress for the same sender key, sender session hint, and task ID. A
 terminal result, failure, or cancellation supersedes progress for that task,
 including progress that arrives late. Superseded messages remain in history.
 Questions, failures, and other non-progress messages are preserved individually.
+Use plain messages for corrections, review findings, and ordinary questions that
+need attention. The send result always explains quiet, replaceable delivery for
+`update`; no question-detection heuristic or delayed progress wake-up is used.
 Use distinct task IDs for new work. The sender session is the existing unsigned
 `reply_to` hint, not a separately authenticated session identity.
 

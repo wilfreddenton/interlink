@@ -22,6 +22,8 @@ REQUESTS = []
 
 
 class Provider(BaseHTTPRequestHandler):
+    behavior = "normal"
+
     def log_message(self, *args):
         pass
 
@@ -40,10 +42,13 @@ class Provider(BaseHTTPRequestHandler):
         tools = {t['name']: t for t in body.get('tools', [])}
         receive = next((n for n in tools if n.endswith('receive_messages')), None)
         ack = next((n for n in tools if n.endswith('acknowledge_messages')), None)
-        match = re.search(r'notification_id=\\?"([^"\\]+)', serial)
-        if match and receive and 'Interlink inbox notice' in serial:
+        match = re.search(r'notification_id["\\\s:=]+([a-zA-Z0-9_-]+)', serial)
+        notice = 'Interlink inbox notice' in serial
+        recovery = 'Interlink has' in serial and 'unread messages' in serial
+        should_fetch = (notice and self.behavior not in ['ignore', 'ignore_all']) or (recovery and self.behavior != 'ignore_all')
+        if match and receive and should_fetch:
             content = [{'type': 'tool_use', 'id': 'tool_' + uuid.uuid4().hex,
-                        'name': receive, 'input': {'notification_id': match[1]}}]
+                        'name': receive, 'input': {} if self.behavior == 'manual' else {'notification_id': match[1]}}]
             reason = 'tool_use'
         elif isinstance(blocks, list) and any(b.get('type') == 'tool_result' for b in blocks):
             texts = []
@@ -134,9 +139,10 @@ class Rpc:
         return reply
 
 
-def run(policy):
+def run(policy, behavior="normal"):
     REQUESTS.clear()
-    work = ROOT / 'target/host-validation/claude-socket' / (policy + '-' + uuid.uuid4().hex[:8])
+    Provider.behavior = behavior
+    work = ROOT / 'target/host-validation/claude-socket' / (policy + '-' + behavior + '-' + uuid.uuid4().hex[:8])
     work.mkdir(parents=True, mode=0o700)
     print('Diagnostics:', work, flush=True)
     processes = []
@@ -199,10 +205,15 @@ def run(policy):
         bind_hook = {'type': 'mcp_tool', 'server': 'interlink', 'tool': 'bind_claude_session',
                      'input': {'session_id': '${session_id}', 'cwd': '${cwd}'}}
         def binding(event):
-            return {**bind_hook, 'input': {**bind_hook['input'], 'hook_event_name': event}}
+            hook = {**bind_hook, 'input': {**bind_hook['input'], 'hook_event_name': event}}
+            if event == 'UserPromptSubmit':
+                hook['input']['prompt'] = '${prompt}'
+            return hook
 
         for event in ['SessionStart', 'UserPromptSubmit']:
             settings['hooks'][event] = [{'hooks': [binding(event)]}]
+        settings['hooks']['Stop'].insert(0, {'hooks': [{'type': 'mcp_tool', 'server': 'interlink',
+            'tool': 'check_claude_inbox', 'input': {'session_id': '${session_id}', 'stop_hook_active': '${stop_hook_active}'}}]})
         settings['hooks']['SessionStart'][0]['hooks'].insert(0, capture_hook)
         settings['hooks']['SessionEnd'] = [{'hooks': [{**bind_hook, 'tool': 'end_claude_session'}]}]
         settings['hooks']['PreToolUse'] = [{'matcher': '^mcp__interlink__', 'hooks': [binding('PreToolUse')]}]
@@ -246,6 +257,34 @@ def run(policy):
             records = mailbox()['records']
             assert len(records) == 1 and records[0]['state'] != 'receiver_acknowledged'
             print('PASS: refusal leaves the body unread and does not start a model turn', flush=True)
+        elif behavior == 'ignore_all':
+            wait_for(lambda: len([e for e in events if e.get('type') == 'result']) >= 2,
+                     'ignored notice ends after bounded Stop recovery')
+            assert len(REQUESTS) == before + 2, 'expected exactly one recovery continuation'
+            assert 'Interlink has 1 unread messages' in json.dumps(REQUESTS[-1]['messages'])
+            assert mailbox()['notice']['host_started'] and not mailbox()['notice']['observed']
+            assert mailbox()['records'][0]['state'] != 'receiver_acknowledged'
+            calls = len(REQUESTS)
+            time.sleep(4)
+            assert len(REQUESTS) == calls, 'ignored recovery caused idle model requests'
+            print('PASS: an ignored recovery remains unread without looping or duplicate socket notices', flush=True)
+            claude.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': '/compact'}}) + '\n')
+            claude.stdin.flush()
+            wait_for(lambda: any(e.get('subtype') == 'compact_boundary' for e in events),
+                     'Claude compacts the conversation while the notice remains unread')
+            # The fixture summary omits the notice ID. Recovery must use durable hook state.
+            Provider.behavior = 'manual'
+            claude.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': 'Reply OK.'}}) + '\n')
+            claude.stdin.flush()
+            wait_for(lambda: any(r['message']['text'] == marker and r['state'] == 'receiver_acknowledged'
+                                 for r in mailbox().get('records', [])), 'post-compaction Stop recovery fetches and acknowledges without the model retaining an ID')
+            wait_for(lambda: not mailbox().get('notice'), 'post-compaction manual fetch retires the started notice')
+            Provider.behavior = 'normal'
+            later = 'AFTER-COMPACTION-' + uuid.uuid4().hex
+            sender.tool('send_message', {'to': 'self', 'session': sid, 'text': later})
+            wait_for(lambda: any(r['message']['text'] == later and r['state'] == 'receiver_acknowledged'
+                                 for r in mailbox().get('records', [])), 'new arrivals wake Claude after compaction recovery')
+
         else:
             wait_for(lambda: any(marker in json.dumps(r['messages']) for r in REQUESTS),
                      'socket wakes idle Claude and real MCP fetch returns broker message')
@@ -258,7 +297,16 @@ def run(policy):
             assert json.dumps(REQUESTS[-1]['messages']).count(guidance) == 1, 'summary reminder repeated'
             assert not (work / 'state/interlink/inbox' / (sid + '.jsonl')).exists()
             print('PASS: accelerated Stop hook stays disabled, no idle renewals or legacy inbox', flush=True)
-        if policy == 'default':
+        if policy == 'default' and behavior in ['manual', 'ignore']:
+            if behavior == 'ignore':
+                assert any('Interlink has 1 unread messages' in json.dumps(r['messages']) for r in REQUESTS)
+            wait_for(lambda: not mailbox().get('notice'), 'started notice retires after fetch and acknowledgement')
+            Provider.behavior = 'normal'
+            later = 'AFTER-RECOVERY-' + uuid.uuid4().hex
+            sender.tool('send_message', {'to': 'self', 'session': sid, 'text': later})
+            wait_for(lambda: any(r['message']['text'] == later and r['state'] == 'receiver_acknowledged'
+                                 for r in mailbox().get('records', [])), 'later message wakes Claude after recovery')
+        if policy == 'default' and behavior == 'normal':
             claude.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': '/clear'}}) + '\n')
             claude.stdin.flush()
             new_id = wait_for(lambda: next((e['session_id'] for e in events
@@ -309,6 +357,9 @@ def run(policy):
             # Resumed history retains the original reminder; the new runtime adds one.
             assert json.dumps(REQUESTS[-1]['messages']).count(guidance) == 2, 'missing resume guidance'
             print('PASS: summary guidance appears once on binding, /clear, and resume', flush=True)
+        debug = (work / 'claude.debug').read_text()
+        assert 'Hook Stop (Stop) error' not in debug, 'Stop hook failed'
+        assert 'Hook UserPromptSubmit (UserPromptSubmit) error' not in debug, 'prompt hook failed'
         assert claude.poll() is None
     finally:
         for process in reversed(processes):
@@ -331,3 +382,5 @@ def run(policy):
 if __name__ == '__main__':
     for inbound in ['default', 'refuse']:
         run(inbound)
+    for behavior in ['manual', 'ignore', 'ignore_all']:
+        run('default', behavior)

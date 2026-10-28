@@ -355,6 +355,17 @@ impl Mailbox {
         limit: usize,
         reset_notification: bool,
     ) -> Result<Vec<Received>> {
+        self.receive_with_notice(notification_id, limit, reset_notification)
+            .map(|(records, _)| records)
+    }
+
+    /// Return diagnostic notice state from the same snapshot as the fetched batch.
+    pub fn receive_with_notice(
+        &self,
+        notification_id: Option<&str>,
+        limit: usize,
+        reset_notification: bool,
+    ) -> Result<(Vec<Received>, Option<Notice>)> {
         let _lock = lock(&self.path.with_extension("lock"))?;
         let mut data = self.load()?;
         if let Some(notice) = &mut data.notice
@@ -376,7 +387,7 @@ impl Mailbox {
         // Stable ordering keeps questions and failures ahead of routine progress.
         received.sort_by_key(|r| r.message.status == Some(TaskStatus::Update));
         received.truncate(limit);
-        Ok(received)
+        Ok((received, data.notice.filter(|notice| !notice.observed)))
     }
 }
 

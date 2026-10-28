@@ -129,6 +129,14 @@ impl Client {
                 }),
             )
             .await;
+        assert!(
+            init["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 2048
+        );
         if host == "codex" {
             assert!(init["result"]["capabilities"].get("experimental").is_none());
         }
@@ -594,6 +602,156 @@ async fn socket_message(listener: &UnixListener) -> String {
         .as_str()
         .unwrap()
         .to_owned()
+}
+
+#[tokio::test]
+async fn claude_started_notice_recovers_without_requeueing_busy_or_stale_notices() {
+    let dir = tempfile::tempdir().unwrap();
+    let receiver = AgentKey::generate().unwrap();
+    let sender = AgentKey::generate().unwrap();
+    identity(dir.path(), &receiver, &sender);
+    let broker = Broker::new(Store::in_memory().unwrap(), 1024);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = broker.clone().router();
+    let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+    let socket_path = dir.path().join("recovery.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let mut client = Client::start_socket(dir.path(), &url, "chat", &socket_path).await;
+    let route = format!("{}#chat", receiver.id().to_b64());
+    let stop = json!({"session_id":"chat", "stop_hook_active":false});
+    broker
+        .enqueue(
+            &route,
+            json!(sender.sign(receiver.id(), "first", now_ms(), "first")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    let frame = socket_frame(&listener).await;
+    let prompt = frame["message"]["content"].as_str().unwrap();
+    let first_id = notice_id(prompt);
+    let manual = client.tool("receive_messages", json!({})).await;
+    assert!(tool_text(&manual).contains("host_started=false"));
+    assert_eq!(
+        tool_text(&client.tool("check_claude_inbox", stop.clone()).await),
+        "{}"
+    );
+    success(
+        &client
+            .tool(
+                "bind_claude_session",
+                json!({"session_id":"chat", "prompt":format!("Quoted: {prompt}")}),
+            )
+            .await,
+    );
+    assert_eq!(
+        tool_text(&client.tool("check_claude_inbox", stop.clone()).await),
+        "{}"
+    );
+    success(
+        &client
+            .tool(
+                "bind_claude_session",
+                json!({"session_id":"chat", "prompt":prompt}),
+            )
+            .await,
+    );
+    // Compaction can erase the model's notice ID; durable prompt tracking must survive MCP restart.
+    client.close().await;
+    let mut client = Client::start_socket(dir.path(), &url, "chat", &socket_path).await;
+    assert_eq!(
+        tool_text(
+            &client
+                .tool(
+                    "check_claude_inbox",
+                    json!({"session_id":"other-chat", "stop_hook_active":false})
+                )
+                .await
+        ),
+        "{}"
+    );
+    let check = client.tool("check_claude_inbox", stop.clone()).await;
+    let output: Value = serde_json::from_str(tool_text(&check)).unwrap();
+    assert_eq!(output["decision"], "block");
+    assert!(output["reason"].as_str().unwrap().contains(first_id));
+    let check = client
+        .tool(
+            "check_claude_inbox",
+            json!({"session_id":"chat", "stop_hook_active":"true"}),
+        )
+        .await;
+    let output: Value = serde_json::from_str(tool_text(&check)).unwrap();
+    assert!(output.get("decision").is_none());
+    assert!(
+        output["systemMessage"]
+            .as_str()
+            .unwrap()
+            .contains("1 unread")
+    );
+    let manual = client.tool("receive_messages", json!({})).await;
+    assert!(tool_text(&manual).contains("host_started=true"));
+    assert!(tool_text(&manual).contains(first_id));
+    client.acknowledge(&manual).await;
+    assert_eq!(
+        tool_text(&client.tool("check_claude_inbox", stop.clone()).await),
+        "{}"
+    );
+    broker
+        .enqueue(
+            &route,
+            json!(sender.sign(receiver.id(), "later", now_ms(), "later")),
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    let frame = socket_frame(&listener).await;
+    let next_prompt = frame["message"]["content"].as_str().unwrap();
+    assert_ne!(notice_id(next_prompt), first_id);
+    success(
+        &client
+            .tool(
+                "bind_claude_session",
+                json!({"session_id":"chat", "prompt":prompt}),
+            )
+            .await,
+    );
+    assert_eq!(
+        tool_text(&client.tool("check_claude_inbox", stop.clone()).await),
+        "{}"
+    );
+    let stale = client
+        .tool("receive_messages", json!({"notification_id":first_id}))
+        .await;
+    assert!(tool_text(&stale).contains("host_started=false"));
+    assert!(tool_text(&stale).contains(notice_id(next_prompt)));
+    success(
+        &client
+            .tool(
+                "bind_claude_session",
+                json!({"session_id":"chat", "prompt":next_prompt}),
+            )
+            .await,
+    );
+    let fetched = client
+        .tool(
+            "receive_messages",
+            json!({"notification_id":notice_id(next_prompt)}),
+        )
+        .await;
+    assert!(!tool_text(&fetched).contains("Outstanding inbox notice"));
+    client.acknowledge(&fetched).await;
+    assert_eq!(
+        tool_text(&client.tool("check_claude_inbox", stop).await),
+        "{}"
+    );
+    assert!(
+        timeout(Duration::from_millis(1200), listener.accept())
+            .await
+            .is_err()
+    );
+    client.close().await;
+    server.abort();
 }
 
 #[tokio::test]
@@ -1964,6 +2122,9 @@ async fn session_summaries_and_routing_work_without_titles() {
     ] {
         assert!(text.contains(expected), "{discovered}");
     }
+    let update = claude.tool("send_message", json!({"to":"self", "session":CODEX_THREAD, "text":"routine progress", "status":"update", "task_id":"quiet-test"})).await;
+    assert!(tool_text(&update).contains("does not wake the receiver"));
+    assert!(tool_text(&update).contains("may be superseded"));
     success(
         &claude
             .tool(

@@ -15,6 +15,19 @@
       {
         "hooks": [
           {
+            "type": "mcp_tool",
+            "server": "plugin:interlink:interlink",
+            "tool": "check_claude_inbox",
+            "input": {
+              "session_id": "${session_id}",
+              "stop_hook_active": "${stop_hook_active}"
+            }
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
             "type": "command",
             "command": "npx -y interlink-mcp wait",
             "async": true,
@@ -65,7 +78,8 @@
             "input": {
               "session_id": "${session_id}",
               "cwd": "${cwd}",
-              "hook_event_name": "UserPromptSubmit"
+              "hook_event_name": "UserPromptSubmit",
+              "prompt": "${prompt}"
             }
           }
         ]

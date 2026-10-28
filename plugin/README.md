@@ -15,6 +15,11 @@ claude plugin install interlink@interlink
 The plugin invokes `npx -y interlink-mcp` for both the server and listener. Use
 version 0.12.0 or newer for socket delivery without idle renewal turns. If upgrading,
 update the installed plugin and restart Claude so it reloads the server and hooks.
+Version 0.12.1 adds a bounded Stop recovery check for notices delivered to a
+Claude prompt. Update both the plugin and binary to enable it. Losing a notice ID
+through compaction or manual inbox reads no longer blocks later wake-ups after
+the inbox is drained. Notices lost before prompt delivery still require explicit
+recovery; see [delivery and recovery](../docs/DELIVERY.md).
 The local instructions below are for testing development changes.
 Version 0.11.0 removes title support; update the binary and plugin together
 and follow the [upgrade notes](../docs/SESSIONS.md#upgrading-from-session-titles).
@@ -99,7 +104,9 @@ channel feature. MCP and hooks must be allowed by the host configuration.
   `/resume` reopens the resumed conversation's mailbox. Update these hooks with
   the binary. Socket delivery remains inactive until binding succeeds.
 - `SessionEnd`: stop the old conversation's workers and retain its mailbox.
-- `Stop`: runs `interlink-mcp wait` asynchronously, exiting immediately in socket
+- `Stop`: `check_claude_inbox` permits one recovery continuation for unread work
+  from a started notice, then warns instead of looping. It preserves queued
+  notices and ignores hooks for a different session. Also runs `interlink-mcp wait` asynchronously, exiting immediately in socket
   or native-channel mode. In legacy inbox mode, verified messages are drained
   from the durable local inbox; exit 2 wakes the host. An OS file lock limits the
   listener to one process per session. After 50 idle minutes it requests a brief

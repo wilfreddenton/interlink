@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-28
+
+### Fixed
+- Track exact Claude notice prompts and add one bounded Stop recovery
+  continuation for unread work. Manual fetch/acknowledgement can retire a started
+  notice at Stop, preventing lost notice IDs from blocking later wake-ups.
+  Update the Claude plugin and MCP binary together, then restart Claude.
+- Expose outstanding notice ID, handoff state, and prompt-observation state on
+  manual and stale-ID inbox reads, without changing acknowledgement semantics.
+- Clarify that `status="update"` is quiet, replaceable progress that may be
+  superseded unread. Tool descriptions, server instructions, the plugin skill,
+  progress reminders, and send results direct substantive messages to plain sends.
+
+### Added
+- Regression coverage for bounded Claude recovery, manual reads, stale hooks,
+  restart persistence, and real host compaction with a lost notice ID.
+
 ## [0.12.0] - 2026-10-22
 
 ### Removed
