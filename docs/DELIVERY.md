@@ -416,9 +416,11 @@ consumes account quota. It builds and uses this checkout's binaries. Install
 sockets and a Codex `auth.json` login file. It uses the model and reasoning effort
 from the user's Codex configuration and Claude's default model.
 
-The test creates a private broker, fresh identity, local Claude plugin copy, and
-separate Codex home and shared daemon. It reviews the four binding hooks and trusts
-their current hashes only in that test home. Only the test's session lookup,
+The test creates a private broker, fresh identity, local Claude plugin copy,
+temporary Claude configuration, and separate Codex home and shared daemon.
+Login files are copied into private temporary directories and removed on exit;
+the test does not write through to the original files. It reviews the four binding hooks and trusts
+their current hashes only in that test home. Only the test's session lookup and summary,
 discovery, send, fetch, and acknowledgement tools are preapproved. The Codex
 filesystem sandbox remains read-only. Normal host configuration, peer policy,
 and existing conversations are not changed.
@@ -430,13 +432,28 @@ in both directions between the models. A controller manually fetches and
 acknowledges incoming messages without observing its queued notice; that notice
 must remain the only queued notice throughout the exchange. This exercises the
 notification backlog regression across actual model turns. After the exchange,
-Claude must remain quiet for ten seconds despite a one-second legacy listener
-renewal setting. Hook lifecycle events do not count as model turns.
+Both hosts must remain quiet for ten seconds despite a one-second Claude legacy
+listener renewal setting. Hook lifecycle events do not count as model turns.
+The test uses session-only destinations and relies on MCP server instructions
+for the receive/acknowledgement protocol rather than repeating it in its prompt.
 
 The fixture suite and live checks passed on 2026-10-18 with Codex 0.163.0 and
 Claude Code 2.1.301. The live run used an installed development build containing
 the Stop guard and version-reporting changes, before its version was bumped from
 0.11.1 to 0.11.2.
+
+On 2026-11-01, two isolated live runs validated the session-addressing and shorter
+notice changes at `46414d1`, using Codex 0.165.0 with `gpt-6.1-sol` and Claude Code
+2.1.312 with `claude-opus-5-5`. Both passed idle wake-up, six-message bursts,
+bidirectional exchanges, notice coalescing, and the ten-second quiet check. The
+second run also asserted that every message delivered to either model was
+acknowledged and had no tool errors or empty fetches. The first run exposed an
+omitted `set_summary` test permission, corrected in the fixture. It also had one
+empty fetch for an already queued notice after Codex had manually consumed its
+messages during the exchange; that turn ended without a notification loop.
+These are bounded live checks, not a guarantee against every model behavior or
+long-running failure. Temporary brokers, client processes, and credential copies
+were removed; the installed Interlink instance was not changed.
 
 On 2026-10-22, live checks passed with Codex 0.163.0 and Claude Code 2.1.308
 using this checkout's socket-delivery build (still reporting version 0.11.2).

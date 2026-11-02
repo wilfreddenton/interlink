@@ -244,7 +244,7 @@ The recorded host runs used Codex 0.160.0 and Claude Code 2.1.278. They cover tr
 Codex lifecycle binding and Claude listener renewal, not production-model or
 interactive UI behavior. See [validation details](docs/DELIVERY.md#validation).
 
-For real model conversations, `just live-host-test` uses the installed Interlink
+For real model conversations, `just live-host-test` uses this checkout's Interlink
 binaries, logged-in Codex and Claude accounts, and Python dependencies from
 `tests/host/requirements-live.txt`. It consumes account quota. The test uses an
 isolated broker and identity, checks idle delivery and message bursts, and has
