@@ -14,10 +14,9 @@ private network.
 
 See [CHANGELOG.md](CHANGELOG.md) for the release details.
 
-This checkout includes unreleased changes planned for **0.13.0**: session-only
-addressing, clearer sender metadata, and shorter inbox notices. Published 0.12.1
-uses peer-plus-session addressing. The new behavior requires this checkout's MCP
-build; no broker update is needed. Legacy calls remain supported.
+Version **0.13.0** adds session-only addressing, clearer sender metadata, and
+shorter inbox notices. Upgrade the MCP server and host integration to use them;
+no broker update is needed. Legacy peer-plus-session calls remain supported.
 
 ## The trust model
 
@@ -61,10 +60,10 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.12.1 or newer:
+Install version 0.13.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.12.1 --locked
+cargo install interlink-mcp --version 0.13.0 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).

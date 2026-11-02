@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-Planned release: **0.13.0**.
+## [0.13.0] - 2026-11-01
 
 - Address messages and cancellations by full session ID, with verified persistent
   ownership, offline routing, authorization checks, and collision rejection.

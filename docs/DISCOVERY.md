@@ -25,7 +25,7 @@ The bus stores announcements by `pubkey#session_id`. `/roster` returns a flat
 array with unsigned `age_ms` values; the MCP server verifies signatures, merges
 entries from its relays, and groups them by identity for `discover`.
 
-In the 0.13.0 development build, use a discovered full session ID as
+Since 0.13.0, use a discovered full session ID as
 `send_message(to="<session-id>", text="...")`. Discovery remembers ownership
 only for our own identity or already authorized peers; seeing an unpaired
 session does not grant permission to message it. Identity verification and

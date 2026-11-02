@@ -69,9 +69,9 @@ no supervision prototype is authorized by these notes alone.
 
 ## Messaging UX investigation (2026-11-01)
 
-Implementation status: the development branch now contains session-only
+Implementation status: 0.13.0 includes session-only
 addressing, verified sender-session metadata, concise notices with MCP-context
-guidance, and instructions against routine empty polling, planned for 0.13.0.
+guidance, and instructions against routine empty polling.
 The observations below describe the pre-change baseline and investigation.
 See [session routing](docs/SESSIONS.md#selecting-a-session) and
 [live validation results](docs/DELIVERY.md#live-model-validation) for the final
