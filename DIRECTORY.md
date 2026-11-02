@@ -2,10 +2,9 @@
 
 The current project implements signed identity, human-gated pairing, discovery,
 per-session routing, task correlation, status messages, and cooperative
-cancellation. Codex CLI support and persistence improvements shipped in
-[0.9.0](CHANGELOG.md#090---2026-10-03). Shared mailbox consumption, progress
-supersession, and expiring notification retries ship in
-[0.10.0](CHANGELOG.md#0100---2026-10-03).
+cancellation. Shared mailbox consumption and progress supersession are shipped.
+Accepted notices now coalesce without timed expiry; bounded Stop recovery handles
+unread work after a notice reaches a prompt. See [delivery](docs/DELIVERY.md).
 
 ## Public-relay hardening
 
@@ -69,6 +68,16 @@ that consume the operator's shared usage. UX investigation below takes priority;
 no supervision prototype is authorized by these notes alone.
 
 ## Messaging UX investigation (2026-11-01)
+
+Implementation status: the development branch now contains session-only
+addressing, verified sender-session metadata, concise notices with MCP-context
+guidance, and instructions against routine empty polling, planned for 0.13.0.
+The observations below describe the pre-change baseline and investigation.
+See [session routing](docs/SESSIONS.md#selecting-a-session) and
+[live validation results](docs/DELIVERY.md#live-model-validation) for the final
+behavior and checks. Host-generated same-harness labels and tool-result
+presentation remain controlled by Claude and Codex. A queued notice may still
+produce one empty fetch after a manual read; this is distinct from a retry loop.
 
 Scope: observations against main `99e71fd` (v0.12.1) and the operator's October 30
 Claude screenshot. Record causes and evaluate options before changing delivery.

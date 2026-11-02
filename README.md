@@ -14,6 +14,11 @@ private network.
 
 See [CHANGELOG.md](CHANGELOG.md) for the release details.
 
+This checkout includes unreleased changes planned for **0.13.0**: session-only
+addressing, clearer sender metadata, and shorter inbox notices. Published 0.12.1
+uses peer-plus-session addressing. The new behavior requires this checkout's MCP
+build; no broker update is needed. Legacy calls remain supported.
+
 ## The trust model
 
 `peers.json` is a deny-by-default allowlist. Names are local petnames; the key is

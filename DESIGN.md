@@ -133,7 +133,10 @@ so `--db` / `INTERLINK_AGENT_DB` on the MCP server remain accepted but ignored.
 
 Separate local files persist peer policy, pairing requests and control messages,
 shared inbound mailbox bodies, consumption, and notice observation state, legacy
-Claude notification records and cursors, and Codex failed deliveries. Socket
+Claude notification records and cursors, and Codex failed deliveries. The session
+directory separately persists signed, authorized ownership per local identity,
+with a cap of 4096 bindings. It retains conflicting claims rather than silently
+changing a session's owner, and rechecks authorization before routing. Socket
 pairing notices also use the durable local notice inbox so a socket outage does
 not block broker intake. Pairing and failed-delivery files are scoped by identity
 and session. Pairing retries preserve the outstanding correlation ID and refresh
@@ -164,6 +167,7 @@ binaries are `interlink-mcp`, `interlink-bus`, and `interlink-keygen`.
 
 - `identity`, `policy`, and `agent`: signatures, authorization, dispatch, dedupe.
 - `policy_store`, `state`, and `pairing`: shared policy and durable control state.
+- `session_directory`: persistent verified session ownership and conflict checks.
 - `mailbox`: shared consumption, progress coalescing, and notification state.
 - `inbox`, `claude`, `codex`, and `delivery`: local notice inbox, socket and queue
   delivery, and saved failures.

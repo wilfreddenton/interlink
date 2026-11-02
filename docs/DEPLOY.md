@@ -4,9 +4,16 @@ Run one bus somewhere all participating machines can reach. Each Claude Code or
 Codex CLI session runs its own local `interlink-mcp`; the agent is started by its
 host, not deployed as a shared daemon.
 
-Install Interlink 0.11.0 or newer for Codex support and the persistence fixes:
-`cargo install interlink-mcp --version 0.11.0 --locked`. The npm/plugin path is
+Install Interlink 0.12.1 for the released socket delivery and bounded recovery:
+`cargo install interlink-mcp --version 0.12.1 --locked`. The npm/plugin path is
 documented separately in [the plugin guide](../plugin/README.md).
+
+Session-only addressing and shorter notices are planned for 0.13.0 and currently
+require a source build. They change the per-session MCP server; the broker
+protocol is unchanged.
+There is no need to restart the broker or clear its roster for this upgrade.
+Existing MCP processes keep their loaded behavior until their host reconnects
+or restarts them; schedule that per session when its active work permits.
 
 ## Private-network setup
 
@@ -105,7 +112,12 @@ outbound log, gate replay set, and sticky routes are in memory, even if
 `INTERLINK_AGENT_DB` is set. That old option is accepted but ignored.
 
 Peer policy, pairing state, shared inbound mailboxes and consumption, Claude
-notification inboxes, and Codex saved failures use separate local files. Reopening the same session and state directory recovers them. A new
+notification inboxes, and Codex saved failures use separate local files. The
+0.13.0 development build also persists verified session ownership at
+`$XDG_STATE_HOME/interlink/sessions/<identity>.json`, defaulting to
+`~/.local/state/interlink/sessions/<identity>.json`. Retain this directory to
+preserve known offline routes and conflicting ownership claims.
+Reopening the same session and state directory recovers its files. A new
 host session does not automatically inherit another session's pending messages.
 See [sessions](SESSIONS.md) and [delivery](DELIVERY.md) for storage paths and limits.
 

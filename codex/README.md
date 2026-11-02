@@ -5,6 +5,10 @@ messages, discovery, and task tools as the Claude Code adapter. A Codex session
 can talk to Claude Code or another Codex session. Sessions on the same identity
 can address each other by session ID without additional pairing.
 
+Passing the ID directly as `to` and the shorter notice format are unreleased
+changes planned for 0.13.0. Use this checkout's build to test them; released
+0.12.1 uses peer-plus-session addressing. See [session routing](../docs/SESSIONS.md#selecting-a-session).
+
 ## Setup
 
 Use **Codex CLI 0.159.0 or newer**, with its default local shared daemon. The

@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+Planned release: **0.13.0**.
+
 - Address messages and cancellations by full session ID, with verified persistent
   ownership, offline routing, authorization checks, and collision rejection.
   Legacy peer-plus-session calls remain supported; no broker update is required.

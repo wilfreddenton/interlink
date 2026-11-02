@@ -51,6 +51,12 @@ The npm package supplies only `interlink-mcp`; the full release archive or
 in memory; separate files persist the shared inbound mailbox and consumption,
 pairing, Claude notification inbox, and failed-delivery recovery.
 
+The source checkout includes unreleased changes planned for 0.13.0: session-only
+addressing, a persistent verified session directory, and shorter notices. These
+are not included in the published 0.12.1 npm binary. See
+[session routing](../docs/SESSIONS.md#selecting-a-session) and the
+[changelog](../CHANGELOG.md#unreleased). No broker update is required.
+
 ## Releasing
 
 The source of truth is [release.yml](../.github/workflows/release.yml). A pushed

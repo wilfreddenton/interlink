@@ -18,6 +18,12 @@ so long notices queued before an upgrade still match the prompt hook. Do not
 poll after ordinary turns or while waiting; notices wake the agent. Purposeful
 manual reads, full-batch draining, and recovery remain available.
 
+The host controls presentation. MCP instructions supply model context rather than
+another chat message, but are not a private or guaranteed invisible channel.
+Peer bodies remain in the receive tool result, which the host may collapse.
+Claude's outer same-harness attribution is host-generated and does not establish
+whether a peer uses Claude or Codex.
+
 Fetching does not consume anything. After reading a response, call
 `acknowledge_messages(messages=[{"sender":"<public key>","msg_id":"<id>"}])`
 with its exact receipt objects. A lost fetch response remains unread. A stale
@@ -419,8 +425,9 @@ from the user's Codex configuration and Claude's default model.
 The test creates a private broker, fresh identity, local Claude plugin copy,
 temporary Claude configuration, and separate Codex home and shared daemon.
 Login files are copied into private temporary directories and removed on exit;
-the test does not write through to the original files. It reviews the four binding hooks and trusts
-their current hashes only in that test home. Only the test's session lookup and summary,
+the test does not write through to the original files. It reviews the four
+binding hooks and trusts their current hashes only in that test home. Only the
+test's session lookup and summary,
 discovery, send, fetch, and acknowledgement tools are preapproved. The Codex
 filesystem sandbox remains read-only. Normal host configuration, peer policy,
 and existing conversations are not changed.
@@ -432,7 +439,7 @@ in both directions between the models. A controller manually fetches and
 acknowledges incoming messages without observing its queued notice; that notice
 must remain the only queued notice throughout the exchange. This exercises the
 notification backlog regression across actual model turns. After the exchange,
-Both hosts must remain quiet for ten seconds despite a one-second Claude legacy
+both hosts must remain quiet for ten seconds despite a one-second Claude legacy
 listener renewal setting. Hook lifecycle events do not count as model turns.
 The test uses session-only destinations and relies on MCP server instructions
 for the receive/acknowledgement protocol rather than repeating it in its prompt.
