@@ -281,7 +281,7 @@ def run(policy, behavior="normal"):
             wait_for(lambda: not mailbox().get('notice'), 'post-compaction manual fetch retires the started notice')
             Provider.behavior = 'normal'
             later = 'AFTER-COMPACTION-' + uuid.uuid4().hex
-            sender.tool('send_message', {'to': 'self', 'session': sid, 'text': later})
+            sender.tool('send_message', {'to': sid, 'text': later})
             wait_for(lambda: any(r['message']['text'] == later and r['state'] == 'receiver_acknowledged'
                                  for r in mailbox().get('records', [])), 'new arrivals wake Claude after compaction recovery')
 
@@ -303,7 +303,7 @@ def run(policy, behavior="normal"):
             wait_for(lambda: not mailbox().get('notice'), 'started notice retires after fetch and acknowledgement')
             Provider.behavior = 'normal'
             later = 'AFTER-RECOVERY-' + uuid.uuid4().hex
-            sender.tool('send_message', {'to': 'self', 'session': sid, 'text': later})
+            sender.tool('send_message', {'to': sid, 'text': later})
             wait_for(lambda: any(r['message']['text'] == later and r['state'] == 'receiver_acknowledged'
                                  for r in mailbox().get('records', [])), 'later message wakes Claude after recovery')
         if policy == 'default' and behavior == 'normal':

@@ -46,10 +46,19 @@ pub struct Notice {
     pub observed: bool,
     #[serde(default)]
     pub host_started: bool,
+    #[serde(default)]
+    pub format_version: u8,
 }
 
 impl Notice {
     pub fn text(&self) -> String {
+        if self.format_version == 1 {
+            return format!(
+                "[Interlink inbox notice] New peer message. Call receive_messages(notification_id=\"{}\").",
+                self.id
+            );
+        }
+        // Queued pre-upgrade prompts must still match the owning prompt hook.
         format!(
             "[Interlink inbox notice] Check the inbox before ending this turn.\n\
              1. Call Interlink's receive_messages(notification_id=\"{}\"). If necessary, discover the Interlink MCP tools first.\n\
@@ -301,6 +310,7 @@ impl Mailbox {
             attempt,
             observed: false,
             host_started: false,
+            format_version: 1,
         };
         data.notice = Some(notice.clone());
         self.save(&data)?;
@@ -415,6 +425,38 @@ mod tests {
             .iter()
             .map(|r| (r.message.from.clone(), r.message.msg_id.clone()))
             .collect()
+    }
+
+    #[test]
+    fn queued_notice_format_survives_upgrade_and_restart() {
+        let old: Notice = serde_json::from_value(serde_json::json!({
+            "id":"old", "state":"host_queued", "messages":[],
+            "retry_at":0, "attempt":0, "observed":false
+        }))
+        .unwrap();
+        assert!(old.text().contains("acknowledge_messages"));
+        assert!(old.text().contains("notification_id=\"old\""));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mail.json");
+        let mailbox = Mailbox::new(&path);
+        mailbox
+            .retain(&message("new", "task", None, now_ms()), "peer")
+            .unwrap();
+        let short = mailbox.reserve_notice().unwrap().unwrap();
+        assert!(short.text().len() < 150);
+        assert_eq!(
+            Mailbox::new(&path).notice().unwrap().unwrap().text(),
+            short.text()
+        );
+        let mut data = mailbox.load().unwrap();
+        data.notice = Some(old.clone());
+        mailbox.save(&data).unwrap();
+        assert_eq!(
+            Mailbox::new(&path).notice().unwrap().unwrap().text(),
+            old.text()
+        );
+        mailbox.start_notice("old").unwrap();
+        assert_eq!(mailbox.stop_check().unwrap(), (1, Some("old".into())));
     }
 
     #[test]

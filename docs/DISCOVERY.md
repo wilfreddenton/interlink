@@ -25,6 +25,13 @@ The bus stores announcements by `pubkey#session_id`. `/roster` returns a flat
 array with unsigned `age_ms` values; the MCP server verifies signatures, merges
 entries from its relays, and groups them by identity for `discover`.
 
+Since 0.13.0, use a discovered full session ID as
+`send_message(to="<session-id>", text="...")`. Discovery remembers ownership
+only for our own identity or already authorized peers; seeing an unpaired
+session does not grant permission to message it. Identity verification and
+pairing remain unchanged. See [session routing](SESSIONS.md#selecting-a-session)
+for offline destinations, conflicts, and legacy calls.
+
 `discover` reports an error when no configured broker returns a valid roster.
 If some brokers respond and others fail, it returns the available entries with
 a warning identifying the failed brokers; those results may be incomplete.

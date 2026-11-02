@@ -14,6 +14,10 @@ private network.
 
 See [CHANGELOG.md](CHANGELOG.md) for the release details.
 
+Version **0.13.0** adds session-only addressing, clearer sender metadata, and
+shorter inbox notices. Upgrade the MCP server and host integration to use them;
+no broker update is needed. Legacy peer-plus-session calls remain supported.
+
 ## The trust model
 
 `peers.json` is a deny-by-default allowlist. Names are local petnames; the key is
@@ -56,10 +60,10 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.12.1 or newer:
+Install version 0.13.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.12.1 --locked
+cargo install interlink-mcp --version 0.13.0 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).
@@ -160,13 +164,14 @@ Discovery identifies sessions by machine identity, session ID, working directory
 git project, and summary. Use `set_summary(summary="checking retries")` to describe
 current work. `get_my_session_id()` returns your own ID without a broker lookup.
 See [sessions and routing](docs/SESSIONS.md).
-`send_message(to="desktop", session="<id>", text="...")` targets one explicitly.
-A unique roster ID prefix also works. Without a session argument, the server
-prefers the peer's remembered reply session, then a single live session, then a
-single away session. Ambiguous choices require an explicit ID.
+`send_message(to="<full-session-id>", text="...")` addresses a session directly,
+on this or another machine. Interlink resolves its authorized identity from signed
+announcements and remembers it for offline delivery. Unknown destinations and
+conflicting identity claims fail rather than selecting a different recipient.
+Legacy peer names with an optional `session` argument remain supported.
 
-Sessions sharing one identity can use `to="self"` to reach each other without
-pairing. A session cannot message itself. Claude uses its host session ID; Codex
+Sessions sharing one identity need no additional pairing.
+A session cannot message itself. Claude uses its host session ID; Codex
 binds to the owning thread UUID before announcing or receiving. Reopening the
 same host session can recover its address; a new session does not inherit it.
 See [sessions](docs/SESSIONS.md) and [presence](docs/PRESENCE.md).
@@ -243,7 +248,7 @@ The recorded host runs used Codex 0.160.0 and Claude Code 2.1.278. They cover tr
 Codex lifecycle binding and Claude listener renewal, not production-model or
 interactive UI behavior. See [validation details](docs/DELIVERY.md#validation).
 
-For real model conversations, `just live-host-test` uses the installed Interlink
+For real model conversations, `just live-host-test` uses this checkout's Interlink
 binaries, logged-in Codex and Claude accounts, and Python dependencies from
 `tests/host/requirements-live.txt`. It consumes account quota. The test uses an
 isolated broker and identity, checks idle delivery and message bursts, and has

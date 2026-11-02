@@ -319,6 +319,9 @@ pub(super) fn render_inbox_line(line: &str) -> String {
     let sender = defang_attr(get("sender").unwrap_or("peer"));
     let mut attrs = String::new();
     for (k, label) in [
+        ("session", "session"),
+        ("reply_peer", "reply_peer"),
+        ("reply_session", "reply_session"),
         ("msg_id", "msg_id"),
         ("task_id", "task"),
         ("status", "status"),

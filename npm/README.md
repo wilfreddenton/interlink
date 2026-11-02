@@ -51,6 +51,11 @@ The npm package supplies only `interlink-mcp`; the full release archive or
 in memory; separate files persist the shared inbound mailbox and consumption,
 pairing, Claude notification inbox, and failed-delivery recovery.
 
+Version 0.13.0 adds session-only addressing, a persistent verified session
+directory, and shorter notices. Update the MCP server and host integration
+together. See [session routing](../docs/SESSIONS.md#selecting-a-session) and the
+[changelog](../CHANGELOG.md#0130---2026-11-01). No broker update is required.
+
 ## Releasing
 
 The source of truth is [release.yml](../.github/workflows/release.yml). A pushed

@@ -3,7 +3,11 @@
 Interlink's Codex adapter uses the same bus, identity files, peer policy, signed
 messages, discovery, and task tools as the Claude Code adapter. A Codex session
 can talk to Claude Code or another Codex session. Sessions on the same identity
-can use `to: "self"` without pairing.
+can address each other by session ID without additional pairing.
+
+Passing the ID directly as `to` and the shorter notice format require Interlink
+0.13.0 or newer. Older versions use peer-plus-session addressing, which remains
+supported. See [session routing](../docs/SESSIONS.md#selecting-a-session).
 
 ## Setup
 
@@ -12,10 +16,10 @@ adapter uses `codex queue`; `--no-daemon`, remote app servers, and the desktop a
 are not supported by this adapter. Ephemeral (`codex exec --ephemeral`) threads
 cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.12.0 or newer:
+Install Interlink 0.13.0 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.12.0 --locked
+cargo install interlink-mcp --version 0.13.0 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`

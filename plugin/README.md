@@ -21,6 +21,9 @@ through compaction or manual inbox reads no longer blocks later wake-ups after
 the inbox is drained. Notices lost before prompt delivery still require explicit
 recovery; see [delivery and recovery](../docs/DELIVERY.md).
 The local instructions below are for testing development changes.
+Version 0.13.0 adds session-only addressing and shorter notices. Update the MCP
+binary and operating skill together; peer-plus-session calls remain compatible.
+The broker protocol is unchanged.
 Version 0.11.0 removes title support; update the binary and plugin together
 and follow the [upgrade notes](../docs/SESSIONS.md#upgrading-from-session-titles).
 
