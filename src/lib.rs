@@ -62,6 +62,9 @@ pub mod mailbox;
 #[cfg(feature = "agent")]
 pub mod state;
 
+#[cfg(feature = "agent")]
+pub mod session_directory;
+
 pub mod route;
 
 #[cfg(feature = "persist")]

@@ -15,8 +15,8 @@ for a local lifecycle hook to supply the current conversation ID.
 
 Give this ID to a newly launched agent in its initial prompt so it can address a
 ready message back to you. The new agent can use the same tool to include its own
-ID in that reply. Sessions sharing an identity use `to="self"` with the destination
-ID; agents under different identities use their configured peer names.
+ID in that reply. Both agents send with `to="<full-session-id>"`; Interlink resolves
+the authorized identity and machine internally.
 
 | Host | ID source | When it registers |
 |---|---|---|
@@ -80,34 +80,52 @@ keep their title behavior until restarted with the new binary.
 
 ## Selecting a session
 
-`send_message(to="desktop", session="<id>", text="...")` selects a session
-explicitly. An exact ID or a unique prefix of a roster entry is expanded to the
-full ID. An ambiguous prefix is rejected. If nothing matches, the supplied value
-is used literally and reported as gone; use a full ID when addressing an offline
-session because an unknown prefix cannot be expanded.
+`send_message(to="<full-session-id>", text="...")` and
+`cancel_task(to="<full-session-id>", task_id="...")` address a specific session.
+Use `discover` to select a session by summary, cwd, and full ID. Prefix matching
+is only available in the legacy `session` argument, not in session-only `to`.
+`conversation_history(peer="<full-session-id>")` selects that session's history;
+legacy peer names still select all sessions for that peer. Outbound history from
+older processes has no session index and remains available under the peer name.
 
-Without `session`, selection is:
+Discovery and session-only sends remember ownership from valid, signed
+announcements belonging to our own identity or an authorized peer. The directory
+is shared per local identity at `sessions/<identity>.json` in Interlink's state
+folder. It survives MCP restarts and allows known offline sessions to be queued
+without guessing a recipient key. Authorization is checked again on use. A
+session claimed by more than one previously authorized identity stays ambiguous,
+even if one claim disappears or a peer is removed. Explicit peer-plus-session
+addressing is required to disambiguate. The directory is capped at 4096 bindings;
+it fails instead of evicting ownership to make room. Unpaired identities and
+invalid signatures cannot establish a binding. This adds no broker protocol.
 
-1. Use the last inbound sender session for this peer if it is still on the roster,
-   whether live or away.
-2. Otherwise use its single live session. Multiple live sessions require a choice.
-3. With no live sessions, use a single away session. Multiple away sessions also
-   require a choice.
-4. With no roster entries, a remembered peer session may be used speculatively,
-   with a gone warning. Without a remembered address, sending fails.
+For compatibility, `send_message(to="desktop", session="<id>", text="...")`
+still selects a session within a named identity. Its session argument accepts an
+exact ID or unique roster prefix; an unknown value is used literally for offline
+delivery. If `session` is omitted from a legacy peer-name call, routing prefers
+the last inbound session while it remains on the roster, then a single live or
+single away session. Multiple candidates require an explicit choice. With no
+roster entries, a remembered reply session can be queued speculatively.
 
-Reply stickiness is keyed by peer identity, not by task ID. Concurrent tasks with
-different sessions under one key should specify `session` explicitly on sends.
-`cancel_task` uses automatic routing and has no explicit session parameter.
+Legacy reply stickiness is per identity, not task. Use session-only addressing
+for concurrent work. A target matching both a known session ID and a peer alias
+is rejected; an explicit peer and `session` disambiguate it.
 
 The signed recipient is the bare public key. `reply_to` is an unsigned routing
 hint, accepted only if its key matches the signed sender. `in_reply_to` is a
 separate, signed message-correlation field.
+Received metadata exposes `session` only when the remembered signed ownership
+matches the message's verified sender. Missing mappings trigger a best-effort,
+one-second roster lookup during reads, not a background poll. Otherwise metadata
+supplies `reply_peer` and `reply_session` for the legacy identity-scoped reply
+path. An unsigned hint must not become a global session-only address pointing to
+another identity. Cached reads remain available while the broker is offline.
 
 ## Sessions under one identity
 
-`send_message(to="self", session="<id>", text="...")` reaches another session
-sharing this key, including Claude-to-Codex delivery. No self-entry in
+`send_message(to="<full-session-id>", text="...")` also reaches sibling sessions,
+including Claude-to-Codex delivery. The old `to="self", session="<id>"` form remains
+a compatibility alias. No self-entry in
 `peers.json` is required. The current session is excluded from routing candidates,
 and explicit attempts to message itself are rejected.
 
@@ -124,7 +142,7 @@ Claude conversation ends or switches. In particular, outbound jobs not yet
 accepted by the broker are not recovered by resuming the old conversation.
 `INTERLINK_AGENT_DB` / `--db` on the agent are accepted but ignored.
 
-Separate files persist peer policy, pairing state, the shared inbound mailbox
+Separate files persist verified session ownership, peer policy, pairing state, the shared inbound mailbox
 and consumption, the Claude notification inbox and cursor, and Codex failed notices. These survive reopening the same session with the
 same state directory. The broker queue survives a broker restart only with
 `--db`; its roster never persists and is rebuilt by announcements.

@@ -44,6 +44,8 @@ pub struct LogRecord {
     pub msg_id: String,
     pub dir: Dir,
     pub peer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
     pub text: Option<String>,
     pub ts: u64,
     pub state: String,
@@ -192,6 +194,12 @@ impl Store {
                 log.insert(rec.msg_id.as_str(), bytes.as_slice())?;
                 let mut idx = wtx.open_table(LOG_INDEX)?;
                 idx.insert(idx_key.as_str(), rec.msg_id.as_str())?;
+                if let Some(route) = &rec.route {
+                    idx.insert(
+                        log_index_key(route, rec.ts, &rec.msg_id).as_str(),
+                        rec.msg_id.as_str(),
+                    )?;
+                }
             }
             wtx.commit()?;
             Ok::<_, anyhow::Error>(())
@@ -352,6 +360,7 @@ mod tests {
             msg_id: msg_id.into(),
             dir,
             peer: peer.into(),
+            route: None,
             text: text.map(str::to_string),
             ts,
             state: "pending".into(),

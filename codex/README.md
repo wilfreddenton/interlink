@@ -3,7 +3,7 @@
 Interlink's Codex adapter uses the same bus, identity files, peer policy, signed
 messages, discovery, and task tools as the Claude Code adapter. A Codex session
 can talk to Claude Code or another Codex session. Sessions on the same identity
-can use `to: "self"` without pairing.
+can address each other by session ID without additional pairing.
 
 ## Setup
 

@@ -160,13 +160,14 @@ Discovery identifies sessions by machine identity, session ID, working directory
 git project, and summary. Use `set_summary(summary="checking retries")` to describe
 current work. `get_my_session_id()` returns your own ID without a broker lookup.
 See [sessions and routing](docs/SESSIONS.md).
-`send_message(to="desktop", session="<id>", text="...")` targets one explicitly.
-A unique roster ID prefix also works. Without a session argument, the server
-prefers the peer's remembered reply session, then a single live session, then a
-single away session. Ambiguous choices require an explicit ID.
+`send_message(to="<full-session-id>", text="...")` addresses a session directly,
+on this or another machine. Interlink resolves its authorized identity from signed
+announcements and remembers it for offline delivery. Unknown destinations and
+conflicting identity claims fail rather than selecting a different recipient.
+Legacy peer names with an optional `session` argument remain supported.
 
-Sessions sharing one identity can use `to="self"` to reach each other without
-pairing. A session cannot message itself. Claude uses its host session ID; Codex
+Sessions sharing one identity need no additional pairing.
+A session cannot message itself. Claude uses its host session ID; Codex
 binds to the owning thread UUID before announcing or receiving. Reopening the
 same host session can recover its address; a new session does not inherit it.
 See [sessions](docs/SESSIONS.md) and [presence](docs/PRESENCE.md).

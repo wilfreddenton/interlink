@@ -11,6 +11,13 @@ the broker is acknowledged. This shared path serves Claude's local socket, Stop 
 Claude channels, and Codex. A host receives a small inbox notice containing a
 `notification_id`, rather than a copy of each message body. The agent calls
 `receive_messages(notification_id="...")` to fetch current unread messages.
+New notices contain only a short fetch cue and their notification ID. The full
+read/acknowledgement protocol is supplied through MCP server instructions,
+not repeated in each visible notice. Stored notices retain their format version
+so long notices queued before an upgrade still match the prompt hook. Do not
+poll after ordinary turns or while waiting; notices wake the agent. Purposeful
+manual reads, full-batch draining, and recovery remain available.
+
 Fetching does not consume anything. After reading a response, call
 `acknowledge_messages(messages=[{"sender":"<public key>","msg_id":"<id>"}])`
 with its exact receipt objects. A lost fetch response remains unread. A stale

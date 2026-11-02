@@ -2129,7 +2129,7 @@ async fn session_summaries_and_routing_work_without_titles() {
         &claude
             .tool(
                 "send_message",
-                json!({"to":"self", "session":CODEX_THREAD, "text":"addressed by session ID"}),
+                json!({"to":CODEX_THREAD, "text":"addressed by session ID"}),
             )
             .await,
     );
@@ -2137,6 +2137,8 @@ async fn session_summaries_and_routing_work_without_titles() {
         loop {
             let received = codex.tool("receive_messages", json!({})).await;
             if tool_text(&received).contains("addressed by session ID") {
+                assert!(tool_text(&received).contains("session=\"claude-session\""));
+                assert!(!tool_text(&received).contains("sender=\"self\""));
                 codex.acknowledge(&received).await;
                 break;
             }
@@ -2148,4 +2150,229 @@ async fn session_summaries_and_routing_work_without_titles() {
     codex.close().await;
     claude.close().await;
     server.abort();
+}
+
+#[tokio::test]
+async fn session_destinations_preserve_authorization_offline_routes_and_legacy_calls() {
+    for host in ["claude", "codex"] {
+        let dir = tempfile::tempdir().unwrap();
+        let key = AgentKey::generate().unwrap();
+        let peer = AgentKey::generate().unwrap();
+        let stranger = AgentKey::generate().unwrap();
+        identity(dir.path(), &key, &peer);
+        let store = Store::in_memory().unwrap();
+        let broker = Broker::new(store.clone(), 1024);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let router = broker.clone().router();
+        let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
+        let session = SessionInfo {
+            session_id: OTHER_THREAD.into(),
+            ..Default::default()
+        };
+        let route = format!("{}#{OTHER_THREAD}", peer.id().to_b64());
+        broker.announce(
+            route.clone(),
+            json!(peer.announce("remote", &session, now_ms())),
+            now_ms(),
+        );
+        let stranger_session = SessionInfo {
+            session_id: "stranger-session".into(),
+            ..Default::default()
+        };
+        broker.announce(
+            "stranger".into(),
+            json!(stranger.announce("stranger", &stranger_session, now_ms())),
+            now_ms(),
+        );
+        let mut forged = peer.announce("remote", &session, now_ms());
+        forged.session.session_id = "forged-session".into();
+        broker.announce("forged".into(), json!(forged), now_ms());
+        let mut client = Client::start_options(
+            dir.path(),
+            host,
+            &url,
+            Path::new("/bin/true"),
+            CODEX_THREAD,
+            true,
+        )
+        .await;
+        if host == "codex" {
+            bind(&mut client, CODEX_THREAD).await;
+        }
+        wait_until(|| {
+            broker
+                .roster(now_ms())
+                .iter()
+                .any(|entry| entry["session"]["session_id"] == CODEX_THREAD)
+        })
+        .await;
+        for destination in [
+            "stranger-session",
+            "forged-session",
+            "unknown-session",
+            CODEX_THREAD,
+        ] {
+            let reply = client
+                .tool(
+                    "send_message",
+                    json!({"to":destination,"text":"must not send"}),
+                )
+                .await;
+            assert!(
+                reply.get("error").is_some() || reply["result"]["isError"] == true,
+                "{reply}"
+            );
+        }
+        success(
+            &client
+                .tool(
+                    "send_message",
+                    json!({"to":OTHER_THREAD,"text":"new session addressing"}),
+                )
+                .await,
+        );
+        success(
+            &client
+                .tool(
+                    "send_message",
+                    json!({"to":"peer","session":OTHER_THREAD,"text":"legacy addressing"}),
+                )
+                .await,
+        );
+        success(
+            &client
+                .tool("cancel_task", json!({"to":OTHER_THREAD,"task_id":"task"}))
+                .await,
+        );
+        timeout(Duration::from_secs(10), async {
+            loop {
+                if store.list(route.clone()).await.unwrap().len() == 3 {
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let history = tool_text(
+            &client
+                .tool("conversation_history", json!({"peer":OTHER_THREAD}))
+                .await,
+        )
+        .to_string();
+        assert!(
+            history.contains("new session addressing") && history.contains("legacy addressing"),
+            "{history}"
+        );
+        let legacy_history = tool_text(
+            &client
+                .tool("conversation_history", json!({"peer":"peer"}))
+                .await,
+        )
+        .to_string();
+        assert!(
+            legacy_history.contains("new session addressing"),
+            "{legacy_history}"
+        );
+        let own_route = format!("{}#{CODEX_THREAD}", key.id().to_b64());
+        for (id, sender_session) in [
+            ("history-target", OTHER_THREAD),
+            ("history-sibling", "sibling"),
+        ] {
+            let mut message = peer.sign(key.id(), id, now_ms(), id);
+            message.reply_to = Some(format!("{}#{sender_session}", peer.id().to_b64()));
+            broker
+                .enqueue(&own_route, json!(message), now_ms())
+                .await
+                .unwrap();
+        }
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let received = client.tool("receive_messages", json!({})).await;
+                if tool_text(&received).contains("history-target")
+                    && tool_text(&received).contains("history-sibling")
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let consumed = client
+            .tool(
+                "conversation_history",
+                json!({"peer":OTHER_THREAD,"consume":true}),
+            )
+            .await;
+        assert!(tool_text(&consumed).contains("history-target"));
+        assert!(!tool_text(&consumed).contains("history-sibling"));
+        let remaining = client.tool("receive_messages", json!({})).await;
+        assert!(tool_text(&remaining).contains("history-sibling"));
+        assert!(!tool_text(&remaining).contains("history-target"));
+        client.acknowledge(&remaining).await;
+        broker.unregister(&route);
+        client.close().await;
+        let mut client = Client::start_options(
+            dir.path(),
+            host,
+            &url,
+            Path::new("/bin/true"),
+            CODEX_THREAD,
+            true,
+        )
+        .await;
+        if host == "codex" {
+            bind(&mut client, CODEX_THREAD).await;
+        }
+        let offline = client
+            .tool(
+                "send_message",
+                json!({"to":OTHER_THREAD,"text":"known offline"}),
+            )
+            .await;
+        success(&offline);
+        assert!(tool_text(&offline).contains("isn't on the roster"));
+        fs::write(dir.path().join("peers.json"), "{}").unwrap();
+        let revoked = client
+            .tool("send_message", json!({"to":OTHER_THREAD,"text":"revoked"}))
+            .await;
+        assert!(revoked.get("error").is_some(), "{revoked}");
+        fs::write(
+            dir.path().join("peers.json"),
+            json!({"peer":{"key":peer.id().to_b64()},"other":{"key":stranger.id().to_b64()}})
+                .to_string(),
+        )
+        .unwrap();
+        broker.announce(
+            "conflicting-owner".into(),
+            json!(stranger.announce("other", &session, now_ms())),
+            now_ms(),
+        );
+        let conflict = client
+            .tool(
+                "send_message",
+                json!({"to":OTHER_THREAD,"text":"must not redirect"}),
+            )
+            .await;
+        assert!(
+            conflict.to_string().contains("conflicting identity claims"),
+            "{conflict}"
+        );
+        broker.unregister("conflicting-owner");
+        let retained = client
+            .tool(
+                "send_message",
+                json!({"to":OTHER_THREAD,"text":"still ambiguous"}),
+            )
+            .await;
+        assert!(
+            retained.to_string().contains("conflicting identity claims"),
+            "{retained}"
+        );
+        success(&client.tool("send_message", json!({"to":"peer","session":OTHER_THREAD,"text":"explicit identity disambiguates"})).await);
+        client.close().await;
+        server.abort();
+    }
 }

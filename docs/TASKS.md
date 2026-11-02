@@ -43,7 +43,7 @@ for cooperating agents.
 ## Tools and routing
 
 - `send_message(to, text, session?, task_id?, status?, in_reply_to?)` sends a
-  message with optional tracking metadata.
+  message with optional tracking metadata; `to` is the full destination session ID.
 - `cancel_task(to, task_id)` sends a signed `canceled` status. Cancellation is
   cooperative: it does not kill a process, interrupt a host tool, or guarantee
   that the peer stops before doing more work.
@@ -51,9 +51,9 @@ for cooperating agents.
   message log, including tracking metadata. `list_pending()` shows ordinary
   messages still in the local outbox.
 
-Reply stickiness is per peer identity, not per task. When tasks target different
-sessions under one identity, specify `session` on sends to preserve the intended
-recipient. `cancel_task` follows automatic session routing.
+Use the intended session ID in `to` for both sending and cancellation. Legacy
+peer-name calls retain automatic routing and reply stickiness per identity, not
+per task.
 
 The outbound log and ordinary outbox are in memory. The shared inbound mailbox,
 consumption, and progress supersession persist per identity/session. Neither is

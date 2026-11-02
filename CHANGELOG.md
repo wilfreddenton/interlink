@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+- Address messages and cancellations by full session ID, with verified persistent
+  ownership, offline routing, authorization checks, and collision rejection.
+  Legacy peer-plus-session calls remain supported; no broker update is required.
+- Include sender session hints in received metadata and avoid displaying siblings
+  as `self`. Support session-specific history alongside existing peer history.
+- Shorten inbox notices, retain protocol guidance in MCP instructions, and
+  discourage routine empty polling. Preserve previously queued notice formats.
+
 ## [0.12.1] - 2026-10-28
 
 ### Fixed

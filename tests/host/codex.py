@@ -241,7 +241,7 @@ try:
     receipts = [json.loads(line.split('] Receipt: ', 1)[1]) for line in received.splitlines() if '] Receipt: ' in line]
     tool(ids[0], 'acknowledge_messages', {'messages': receipts})
     assert json.loads(tool(ids[0], 'check_codex_inbox', {'thread_id': ids[0], 'stop_hook_active': True})) == {}
-    tool(ids[1], 'send_message', {'to': 'self', 'session': ids[0], 'text': 'new arrival after recovery'})
+    tool(ids[1], 'send_message', {'to': ids[0], 'text': 'new arrival after recovery'})
     end = time.monotonic() + 15
     while time.monotonic() < end:
         notices = [e[-1] for e in map(json.loads, queued.read_text().splitlines()) if e[2] == ids[0]]

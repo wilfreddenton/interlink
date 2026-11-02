@@ -26,19 +26,16 @@ Use `get_my_session_id()` to get your own Interlink ID. Include it in a newly
 launched agent's initial prompt so it can send you a ready message with its own
 ID. This tool does not contact the broker or bind an unregistered Codex session.
 
-Use `send_message(to: "desktop", text: "...")`, where `to` is the local petname.
-`discover` shows live and away sessions. Select one with `session: "<id>"` when
-there are several; a unique roster ID prefix also works. Use the full ID for an
-offline session because an unknown prefix cannot be expanded.
+Use `discover` to find sessions by summary, cwd, and ID, then
+`send_message(to: "<full-session-id>", text: "...")`. This works across machines
+and between sessions sharing one identity. Interlink verifies identities and
+requires pairing for new peers. A known session remains addressable offline;
+unknown or conflicting ownership is an error. You cannot message this session.
+Legacy peer names plus an optional `session` argument remain supported. When a
+message supplies `reply_peer` and `reply_session` instead of a verified `session`,
+reply with `to=reply_peer, session=reply_session`. Its unsigned session hint must
+stay scoped to the signed sender's identity.
 
-Without an explicit session, replies prefer the last inbound session for that
-identity. This includes an away session that may be asleep. With no remembered
-session, a single live or single away session can be selected automatically.
-Reply stickiness is per identity, not per task; specify the session when concurrent
-tasks use different sessions of one peer.
-
-`send_message(to: "self", session: "<id>", text: "...")` reaches another session
-using the same key without pairing. It cannot address this session itself.
 Once you understand your task, use `set_summary(summary: "what you're working on")`
 so other sessions can find relevant help through `discover`. Update it only when
 you judge a change in focus or expertise useful to other sessions, not every turn.
@@ -72,7 +69,7 @@ update so both sides can correlate subsequent messages.
 - Finish with `status: "result"` or `status: "failed"`. Use a new task ID for later
   work. These are collaboration conventions, not an enforced task state machine.
 - `cancel_task(to, task_id)` requests cooperative cancellation. It does not stop
-  the peer's process or forcibly interrupt its tools, and follows automatic routing.
+  the peer's process or forcibly interrupt its tools, and accepts a destination session ID.
 
 The Claude progress hook can remind you after selected tool events, but it tracks
 only the most recently marked task. Continue sending meaningful updates yourself.
@@ -108,8 +105,9 @@ knock alone cannot repair one-sided trust.
 local message state. Every inbox notice requires calling `receive_messages` with
 its `notification_id` before ending the turn. After reading, call
 `acknowledge_messages` with the exact returned receipt objects before acting on
-the messages or fetching another batch. End silently only after an empty fetch
-or acknowledgement. If either tool is unavailable or fails, report the blocker.
+the messages or fetching another full batch. An empty fetch ends notice handling.
+Do not poll after ordinary turns or while waiting: notices wake you. Purposeful
+manual reads and recovery remain available. Report missing tools or errors.
 Manual fetches and acknowledgement do not retire an outstanding host notice;
 pass its matching `notification_id` when handling it. If the host lost that notice,
 `receive_messages(reset_notification=true)` explicitly restores notifications for
