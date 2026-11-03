@@ -52,6 +52,9 @@ pub struct Notice {
 
 impl Notice {
     pub fn text(&self) -> String {
+        if self.format_version == 2 {
+            return format!("[Interlink inbox notice: {}]", self.id);
+        }
         if self.format_version == 1 {
             return format!(
                 "[Interlink inbox notice] New peer message. Call receive_messages(notification_id=\"{}\").",
@@ -310,7 +313,7 @@ impl Mailbox {
             attempt,
             observed: false,
             host_started: false,
-            format_version: 1,
+            format_version: 2,
         };
         data.notice = Some(notice.clone());
         self.save(&data)?;

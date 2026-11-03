@@ -14,9 +14,10 @@ private network.
 
 See [CHANGELOG.md](CHANGELOG.md) for the release details.
 
-Version **0.13.0** adds session-only addressing, clearer sender metadata, and
-shorter inbox notices. Upgrade the MCP server and host integration to use them;
-no broker update is needed. Legacy peer-plus-session calls remain supported.
+Version **0.13.1** reduces wake notices to `[Interlink inbox notice: ID]` and
+prevents Codex Stop recovery from reading ahead of queued notices. Guidance stays
+in MCP context. Update the MCP server and host integration when active work permits;
+no broker update is needed. Session-only and legacy peer-plus-session calls remain supported.
 
 ## The trust model
 
@@ -60,10 +61,10 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.13.0 or newer:
+Install version 0.13.1 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.13.0 --locked
+cargo install interlink-mcp --version 0.13.1 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).
@@ -125,9 +126,9 @@ For the optional native-channel path, see
 ### Codex CLI
 
 Follow [codex/README.md](codex/README.md) to configure the MCP server and trusted
-binding hooks. The adapter uses `codex queue` on the local shared daemon. It
-supports root CLI sessions, not desktop, remote app-server, subagent, or ephemeral
-thread delivery. No sandbox or hook-trust bypass is needed.
+binding hooks. The adapter uses `codex queue` for local sessions, including
+standalone `--no-daemon` sessions tested on Codex 0.166.0. It supports root CLI
+sessions, not desktop, remote app-server, subagent, or ephemeral thread delivery. No sandbox or hook-trust bypass is needed.
 
 Claude and Codex can share the same identity and peer policy. The Claude plugin
 does not configure Codex automatically.

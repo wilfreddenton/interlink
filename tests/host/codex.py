@@ -205,10 +205,11 @@ try:
         raise AssertionError('missing recorded notice')
     notice = notices[0]
     busy_check = json.loads(tool(ids[0], 'check_codex_inbox', {'thread_id': ids[0], 'stop_hook_active': False}))
-    assert busy_check['decision'] == 'block' and 'notification_id' not in busy_check['reason'], busy_check
+    assert busy_check == {}, 'Stop recovery consumed work ahead of the queued notice'
+    assert json.loads(tool(ids[0], 'check_codex_inbox', {'thread_id': ids[0], 'stop_hook_active': True})) == {}, 'queued notice triggered a premature recovery warning'
     tool(ids[0], 'bind_codex_session', {'thread_id': ids[0], 'prompt': 'Quoted notice: ' + notice})
     quoted_check = json.loads(tool(ids[0], 'check_codex_inbox', {'thread_id': ids[0], 'stop_hook_active': False}))
-    assert 'notification_id' not in quoted_check['reason'], 'quoted notice was treated as dequeued'
+    assert quoted_check == {}, 'quoted notice was treated as dequeued'
     before_requests = len(Provider.requests)
     before_events = len(server.events)
     server.call('thread/queue/add', {'threadId': ids[0], 'clientUserMessageId': str(uuid.uuid4()),
@@ -227,10 +228,11 @@ try:
     assert len(Provider.requests) == before_requests + 2, 'repeated Stop continuation'
     assert all(json.dumps(r['input']).count('Interlink session summary:') == 1
                for r in Provider.requests), 'summary guidance missing or repeated'
-    print('PASS: summary guidance reaches Codex once per thread, without per-turn reminders', flush=True)
+    assert 'On [Interlink inbox notice: ID]' in json.dumps(Provider.requests), 'missing MCP notice guidance in model context'
+    print('PASS: notice and summary guidance reach Codex model context', flush=True)
     assert 'Interlink inbox needs attention' in json.dumps(recent), recent
     assert 'Interlink has 1 unread messages' in json.dumps(Provider.requests[-1]), 'missing recovery prompt'
-    notification_id = notice.split('notification_id="', 1)[1].split('"', 1)[0]
+    notification_id = notice.removeprefix("[Interlink inbox notice: ").removesuffix("]")
     assert notification_id in json.dumps(Provider.requests[-1]), 'prompt hook did not track the dequeued notice'
     inbox = next((WORK/'state/interlink/mailbox').glob('*/' + ids[0] + '.json'))
     state = json.loads(inbox.read_text())
@@ -250,7 +252,7 @@ try:
         time.sleep(.1)
     else:
         raise AssertionError('recovery did not rearm later notifications')
-    new_id = notices[-1].split('notification_id="', 1)[1].split('"', 1)[0]
+    new_id = notices[-1].removeprefix("[Interlink inbox notice: ").removesuffix("]")
     assert new_id != notification_id
     received = tool(ids[0], 'receive_messages', {'notification_id': new_id})
     receipts = [json.loads(line.split('] Receipt: ', 1)[1]) for line in received.splitlines() if '] Receipt: ' in line]

@@ -43,6 +43,7 @@ class Provider(BaseHTTPRequestHandler):
         receive = next((n for n in tools if n.endswith('receive_messages')), None)
         ack = next((n for n in tools if n.endswith('acknowledge_messages')), None)
         match = re.search(r'notification_id["\\\s:=]+([a-zA-Z0-9_-]+)', serial)
+        match = re.search(r'\[Interlink inbox notice: ([a-zA-Z0-9_-]+)\]', serial) or match
         notice = 'Interlink inbox notice' in serial
         recovery = 'Interlink has' in serial and 'unread messages' in serial
         should_fetch = (notice and self.behavior not in ['ignore', 'ignore_all']) or (recovery and self.behavior != 'ignore_all')
@@ -238,6 +239,7 @@ def run(policy, behavior="normal"):
         wait_for(lambda: any(e.get('type') == 'result' for e in events), 'initial Claude turn completed')
         guidance = 'Interlink session summary:'
         assert json.dumps(REQUESTS[-1]['messages']).count(guidance) == 1, 'missing summary guidance'
+        assert 'On [Interlink inbox notice: ID]' in json.dumps(REQUESTS), 'missing MCP notice guidance in model context'
         wait_for(lambda: any(a['session']['session_id'] == sid for a in (roster() or {}).get('roster', [])),
                  'Claude connected to real MCP without a compatibility shim')
         before = len(REQUESTS)

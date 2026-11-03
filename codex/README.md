@@ -11,15 +11,16 @@ supported. See [session routing](../docs/SESSIONS.md#selecting-a-session).
 
 ## Setup
 
-Use **Codex CLI 0.159.0 or newer**, with its default local shared daemon. The
-adapter uses `codex queue`; `--no-daemon`, remote app servers, and the desktop app
-are not supported by this adapter. Ephemeral (`codex exec --ephemeral`) threads
-cannot accept queued submissions. Check `codex queue --help` before setup.
+Use **Codex CLI 0.166.0 or newer** for standalone `--no-daemon` sessions, as
+validated by the live checks. Earlier versions were tested with their default
+local shared daemon. The adapter uses `codex queue`; remote app servers and the
+desktop app are not covered by this adapter's validation. Ephemeral
+(`codex exec --ephemeral`) threads cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.13.0 or newer:
+Install Interlink 0.13.1 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.13.0 --locked
+cargo install interlink-mcp --version 0.13.1 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`
@@ -45,8 +46,11 @@ before MCP is ready, so prompt, Interlink tool, and completed-turn hooks provide
 fallbacks.
 The `UserPromptSubmit` hook also passes the prompt so Interlink can recognize
 its own notification leaving the host queue. The `Stop` hook calls
-`check_codex_inbox` to recover skipped inbox work. When upgrading an existing
-setup, install the new binary and restart and resume each open Codex chat first.
+`check_codex_inbox` to recover skipped inbox work only after that notice reaches
+the session. It stays quiet while the notice is still queued, letting the current
+turn end rather than reading messages ahead of the wake-up. This is the same
+recovery rule Claude uses. When upgrading an existing setup, install the new
+binary and restart and resume each open Codex chat first.
 Check `/mcp verbose` in each chat: Interlink must expose `check_codex_inbox`,
 `receive_messages`, and `acknowledge_messages`. Then replace those two hook
 definitions with the sample and review their new hashes in `/hooks`. Updating
@@ -167,10 +171,10 @@ remain unread, it surfaces an `Interlink inbox needs attention` warning instead
 of looping. The guard does not consume messages or queue another notification.
 
 The prompt hook records when the current notification reaches Codex. Only then
-may the recovery prompt supply its ID to `receive_messages`. If the notification
-is still queued behind a busy turn, the guard uses a plain fetch, preserving that
-one outstanding notification. This distinction survives MCP restarts. An empty
-inbox also retires a notification known to have started, so a skipped fetch after
+does the guard request recovery and supply its ID to `receive_messages`. If the
+notification is still queued behind a busy turn, the guard stays quiet so that
+turn can end and the queued notice can run. This distinction survives MCP
+restarts. An empty inbox also retires a notification known to have started, so a skipped fetch after
 manual consumption cannot strand later arrivals.
 
 The guard needs a running, trusted hook and an available MCP connection. It does

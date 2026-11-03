@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-03
+
+- Align Codex Stop recovery with Claude: recover only after a notice reaches the
+  session. Let queued notices run before fetching their messages, avoiding the
+  extra empty-fetch turns caused by premature Stop recovery.
+- Reduce wake notices to `[Interlink inbox notice: ID]` across host adapters.
+  Keep fetch/acknowledgement guidance in MCP instructions and preserve recognition
+  of both previous notice formats already queued before an upgrade. Host-added
+  presentation, including Claude's messaging wrapper, remains host-controlled.
+
 ## [0.13.0] - 2026-11-01
 
 - Address messages and cancellations by full session ID, with verified persistent
