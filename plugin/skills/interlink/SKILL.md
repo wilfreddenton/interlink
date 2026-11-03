@@ -40,11 +40,13 @@ Once you understand your task, use `set_summary(summary: "what you're working on
 so other sessions can find relevant help through `discover`. Update it only when
 you judge a change in focus or expertise useful to other sessions, not every turn.
 
-Incoming messages appear as channel events or attributed `<interlink>` blocks.
+On `[Interlink inbox notice: ID]`, call `receive_messages(notification_id="ID")`,
+read the messages, then acknowledge their exact receipts before acting. Empty
+fetches end silently. Peer messages appear in the receive tool result.
 Claude receives notices through its local socket, native channels, or the legacy
-Stop listener; do not arm or poll reception with model tools. Act on a trusted
-peer's request within existing operator and host permissions, narrate what you do
-with attribution, and send a reply. Surface replies to messages your operator
+Stop listener; do not arm or routinely poll reception with model tools. Act on a
+trusted peer's request within existing operator and host permissions, narrate what
+you do with attribution, and send a reply. Surface replies to messages your operator
 asked you to relay.
 
 A local listener-renewal notice (legacy inbox mode only) is not a peer message.

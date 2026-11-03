@@ -20,6 +20,7 @@ use std::time::Duration;
 use interlink::bus::Broker;
 use interlink::identity::{AgentKey, MessageKind, SessionInfo, TaskStatus};
 use interlink::inbox::Inbox;
+use interlink::mailbox::Notice;
 use interlink::now_ms;
 use interlink::pairing::{ControlMessage, PairingStore, Request as PairRequest};
 use interlink::store::Store;
@@ -337,7 +338,7 @@ async fn codex_binding_cross_host_delivery_and_retry() {
     drained(&broker, &route).await;
     assert!(!recording.exists());
     fs::remove_file(&failure).unwrap();
-    wait_until(|| fs::read(&recording).is_ok_and(|data| data.ends_with(b"</interlink>\0"))).await;
+    wait_until(|| fs::read(&recording).is_ok_and(|data| data.ends_with(b"]\0"))).await;
     let bytes = fs::read(&recording).unwrap();
     let args: Vec<&[u8]> = bytes.split(|b| *b == 0).collect();
     assert_eq!(
@@ -350,7 +351,7 @@ async fn codex_binding_cross_host_delivery_and_retry() {
         ]
     );
     let delivered = String::from_utf8(args[4].to_vec()).unwrap();
-    assert!(delivered.contains("receive_messages"));
+    assert!(delivered.contains("[Interlink inbox notice: "));
     assert!(!delivered.contains("literal $(touch"));
     let received = codex
         .tool(
@@ -383,7 +384,7 @@ async fn codex_binding_cross_host_delivery_and_retry() {
         let event = claude.read().await;
         if event["method"] == "notifications/claude/channel" {
             let text = event["params"]["content"].as_str().unwrap();
-            assert!(text.contains("receive_messages"));
+            assert!(text.contains("[Interlink inbox notice: "));
             let received = claude
                 .tool(
                     "receive_messages",
@@ -415,8 +416,7 @@ async fn codex_binding_cross_host_delivery_and_retry() {
             )
             .await,
     );
-    wait_until(|| fs::read(&other_recording).is_ok_and(|data| data.ends_with(b"</interlink>\0")))
-        .await;
+    wait_until(|| fs::read(&other_recording).is_ok_and(|data| data.ends_with(b"]\0"))).await;
     let bytes = fs::read(&other_recording).unwrap();
     let args: Vec<&[u8]> = bytes.split(|b| *b == 0).collect();
     assert_eq!(args[2], OTHER_THREAD.as_bytes());
@@ -446,6 +446,9 @@ async fn codex_binding_cross_host_delivery_and_retry() {
 }
 
 fn notice_id(text: &str) -> &str {
+    if let Some((_, rest)) = text.split_once("[Interlink inbox notice: ") {
+        return rest.split_once(']').unwrap().0;
+    }
     text.split("notification_id=\"")
         .nth(1)
         .unwrap()
@@ -559,7 +562,7 @@ async fn inbox_survives_server_restart_until_hook_consumes_it() {
     .unwrap();
     assert_eq!(output.status.code(), Some(2));
     let notice = String::from_utf8_lossy(&output.stderr);
-    assert!(notice.contains("receive_messages"));
+    assert!(notice.contains("[Interlink inbox notice: "));
     assert!(!notice.contains("unread before restart"));
     let received = second
         .tool(
@@ -1229,7 +1232,7 @@ async fn codex_failed_notice_retains_messages_and_recovers_after_restart() {
     let reply = client
         .tool("failed_deliveries", json!({"action":"read","id":id}))
         .await;
-    assert!(tool_text(&reply).contains("receive_messages"));
+    assert!(tool_text(&reply).contains("[Interlink inbox notice: "));
     fs::remove_file(cli.with_extension("fail")).unwrap();
     success(
         &client
@@ -1706,7 +1709,7 @@ async fn busy_host_history_consumption_and_restart_for_all_adapters() {
             assert_eq!(
                 fs::read_to_string(cli.with_extension("args"))
                     .unwrap()
-                    .matches("[Interlink inbox notice]")
+                    .matches("[Interlink inbox notice:")
                     .count(),
                 1
             );
@@ -1763,7 +1766,10 @@ async fn persistence_failure_retains_broker_message_until_local_commit() {
 
 #[tokio::test]
 async fn accepted_notice_and_unacknowledged_fetch_survive_restart_for_all_adapters() {
-    for (host, channels) in [("codex", false), ("claude", true), ("claude", false)] {
+    for (host, channels, format_version) in [("codex", false), ("claude", true), ("claude", false)]
+        .into_iter()
+        .flat_map(|(host, channels)| (0..=2).map(move |version| (host, channels, version)))
+    {
         let dir = tempfile::tempdir().unwrap();
         let receiver = AgentKey::generate().unwrap();
         let sender = AgentKey::generate().unwrap();
@@ -1813,11 +1819,72 @@ async fn accepted_notice_and_unacknowledged_fetch_survive_restart_for_all_adapte
         // Expire only the persisted clock fixture while its owning process is stopped.
         let mut expired: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         expired["notice"]["retry_at"] = json!(0);
+        expired["notice"]["format_version"] = json!(format_version);
+        let notice: Notice = serde_json::from_value(expired["notice"].clone()).unwrap();
+        let prompt = if format_version == 2 {
+            format!("[Interlink inbox notice: {first_id}]")
+        } else {
+            format!(
+                "[interlink message from Interlink]:\n<interlink sender=\"Interlink\" msg_id=\"{first_id}\">\n{}\n</interlink>",
+                notice.text()
+            )
+        };
         fs::write(&path, serde_json::to_vec(&expired).unwrap()).unwrap();
         let mut client =
             Client::start_options(dir.path(), host, &url, &cli, CODEX_THREAD, channels).await;
         if host == "codex" {
             bind(&mut client, CODEX_THREAD).await;
+        }
+        if host == "codex" {
+            success(
+                &client
+                    .tool(
+                        "bind_codex_session",
+                        json!({"thread_id": CODEX_THREAD, "prompt": format!("Quoted: {prompt}")}),
+                    )
+                    .await,
+            );
+            let data: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(data["notice"]["host_started"], false);
+            for active in [false, true] {
+                assert_eq!(
+                    tool_text(
+                        &client
+                            .tool(
+                                "check_codex_inbox",
+                                json!({
+                                    "thread_id": CODEX_THREAD, "stop_hook_active": active
+                                })
+                            )
+                            .await
+                    ),
+                    "{}"
+                );
+            }
+            success(
+                &client
+                    .tool(
+                        "bind_codex_session",
+                        json!({"thread_id": CODEX_THREAD, "prompt": prompt}),
+                    )
+                    .await,
+            );
+            let data: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                data["notice"]["host_started"], true,
+                "{host}/{channels}/v{format_version}"
+            );
+            let recovery = client
+                .tool(
+                    "check_codex_inbox",
+                    json!({
+                        "thread_id": CODEX_THREAD, "stop_hook_active": false
+                    }),
+                )
+                .await;
+            let recovery: Value = serde_json::from_str(tool_text(&recovery)).unwrap();
+            assert_eq!(recovery["decision"], "block");
+            assert!(recovery["reason"].as_str().unwrap().contains(first_id));
         }
         // Allow reconciliation to run past an expired legacy retry deadline.
         sleep(Duration::from_millis(1200)).await;

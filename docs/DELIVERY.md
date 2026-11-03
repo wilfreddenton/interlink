@@ -11,12 +11,13 @@ the broker is acknowledged. This shared path serves Claude's local socket, Stop 
 Claude channels, and Codex. A host receives a small inbox notice containing a
 `notification_id`, rather than a copy of each message body. The agent calls
 `receive_messages(notification_id="...")` to fetch current unread messages.
-New notices contain only a short fetch cue and their notification ID. The full
+New notices are a single line: `[Interlink inbox notice: ID]`. They contain no
+visible tool instructions or Interlink attribution wrapper. The full
 read/acknowledgement protocol is supplied through MCP server instructions,
 not repeated in each visible notice. Stored notices retain their format version
-so long notices queued before an upgrade still match the prompt hook. Do not
-poll after ordinary turns or while waiting; notices wake the agent. Purposeful
-manual reads, full-batch draining, and recovery remain available.
+so both previous notice formats queued before an upgrade still match the prompt
+hook. Do not poll after ordinary turns or while waiting; notices wake the agent.
+Purposeful manual reads, full-batch draining, and recovery remain available.
 
 The host controls presentation. MCP instructions supply model context rather than
 another chat message, but are not a private or guaranteed invisible channel.
@@ -33,8 +34,10 @@ The Codex sample also installs an end-of-turn inbox guard. Its prompt hook marks
 the current notice as started only when the incoming prompt exactly matches that
 notice. This persisted marker distinguishes a dequeued notice from one still
 waiting behind a busy turn. The Stop hook requests one fetch/acknowledgement
-continuation for unread non-progress messages. It supplies the notice ID only
-when prompt delivery was observed; otherwise it leaves the queued wake-up intact.
+continuation for unread non-progress messages only after prompt delivery was
+observed, and supplies that notice ID. While a notice is still queued, Stop stays
+quiet and lets the current turn end so the queued notice can run. Both hosts use
+this same recovery rule.
 It may retire a started notice with an empty inbox, but never acknowledges bodies.
 If a Stop hook already continued the turn, remaining unread work produces a UI
 warning instead of another continuation. No timer or extra queue submission is
@@ -476,3 +479,12 @@ Diagnostics and a successful-run `summary.json` are saved under
 cleaned up on exit. The existing fixture tests remain useful for deterministic
 failure and restart coverage. This live check does not cover the interactive
 terminal UI, native Claude channels, or cross-machine network failures.
+
+On 2026-11-03, an isolated real-model run validated the 0.13.1 compact notice and
+shared Stop-recovery changes using standalone Codex 0.166.0 (`--no-daemon`) and
+Claude Code 2.1.312. A temporary PTY variant of the live fixture replaced its
+Codex daemon with a standalone terminal session. Both hosts passed idle wake-up,
+six-message bursts, bidirectional exchanges, and acknowledgement of every message.
+Each host made four inbox fetches with zero empty results. Neither started extra
+turns during the final 20-second quiet check, and no pending wake-ups remained.
+The standard live-test recipe above still uses an isolated test daemon.

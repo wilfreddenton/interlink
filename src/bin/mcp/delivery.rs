@@ -12,7 +12,7 @@ use interlink::mailbox::{Mailbox, Notice};
 use rmcp::RoleServer;
 use rmcp::model::{CustomNotification, ServerNotification};
 use rmcp::service::Peer;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::{Inner, backoff, inbox_path};
 
@@ -94,12 +94,11 @@ impl SocketInbox {
 impl Sink {
     pub(super) async fn deliver_notice(&self, notice: &Notice) -> bool {
         let text = notice.text();
+        let mut meta = meta_map("Interlink", &notice.id, None, None, None);
+        meta.insert("notice_format".into(), json!(notice.format_version));
         let mut reason = String::new();
         for attempt in 0..3 {
-            match self
-                .try_deliver(&text, "Interlink", &notice.id, None, None, None)
-                .await
-            {
+            match self.try_deliver(&text, meta.clone()).await {
                 Ok(()) => {
                     if let Sink::Codex(inner) = self
                         && let Err(e) = inner.failed_deliveries().and_then(|s| s.clear_notices())
@@ -123,7 +122,7 @@ impl Sink {
         }
         tracing::warn!(id = %notice.id, %reason, "notice failed; mailbox will retry after cooldown");
         if let Sink::Codex(inner) = self {
-            let mut record = meta_map("Interlink", &notice.id, None, None, None);
+            let mut record = meta;
             record.insert("content".into(), json!(text));
             let text = render_inbox_line(&Value::Object(record).to_string());
             if let Err(e) = inner
@@ -179,8 +178,11 @@ impl Sink {
                     // accepting a control notice. The notifier drains this queue.
                     append_inbox(inbox, content, sender, msg_id, task_id, status, in_reply_to)
                 } else {
-                    self.try_deliver(content, sender, msg_id, task_id, status, in_reply_to)
-                        .await
+                    self.try_deliver(
+                        content,
+                        meta_map(sender, msg_id, task_id, status, in_reply_to),
+                    )
+                    .await
                 };
                 match result {
                     Ok(()) => return true,
@@ -203,35 +205,22 @@ impl Sink {
         }
     }
 
-    async fn try_deliver(
-        &self,
-        content: &str,
-        sender: &str,
-        msg_id: &str,
-        task_id: Option<&str>,
-        status: Option<&str>,
-        in_reply_to: Option<&str>,
-    ) -> Result<()> {
+    async fn try_deliver(&self, content: &str, mut meta: Map<String, Value>) -> Result<()> {
+        if let Sink::Channel(peer) = self {
+            meta.remove("notice_format");
+            return push(peer, content, meta).await;
+        }
+        let mut record = meta;
+        record.insert("content".into(), json!(content));
+        let line = Value::Object(record).to_string();
         match self {
             Sink::Socket {
                 socket, session_id, ..
-            } => {
-                let mut record = meta_map(sender, msg_id, task_id, status, in_reply_to);
-                record.insert("content".into(), json!(content));
-                socket
-                    .deliver(
-                        session_id,
-                        &render_inbox_line(&Value::Object(record).to_string()),
-                    )
-                    .await
-            }
-            Sink::Channel(peer) => {
-                push(peer, content, sender, msg_id, task_id, status, in_reply_to).await
-            }
+            } => socket.deliver(session_id, &render_inbox_line(&line)).await,
             Sink::Inbox(inner) => {
                 let sid = inner.session.read().unwrap().session_id.clone();
                 let path = inbox_path(&sid).context("no state directory for the inbox")?;
-                append_inbox(&path, content, sender, msg_id, task_id, status, in_reply_to)
+                Inbox::open(&path)?.append(&line)
             }
             Sink::Codex(inner) => {
                 let codex = inner
@@ -239,13 +228,11 @@ impl Sink {
                     .as_ref()
                     .context("missing Codex delivery configuration")?;
                 let thread_id = inner.session.read().unwrap().session_id.clone();
-                let mut record = meta_map(sender, msg_id, task_id, status, in_reply_to);
-                record.insert("content".into(), json!(content));
-                let text = render_inbox_line(&Value::Object(record).to_string());
-                deliver_codex(&codex.executable, &thread_id, &text)
+                deliver_codex(&codex.executable, &thread_id, &render_inbox_line(&line))
                     .await
                     .map_err(Into::into)
             }
+            Sink::Channel(_) => unreachable!(),
         }
     }
 }
@@ -316,6 +303,13 @@ pub(super) fn render_inbox_line(line: &str) -> String {
         return line.to_string();
     };
     let get = |k: &str| v.get(k).and_then(|x| x.as_str());
+    // Only locally generated notices carry this marker. Peer bodies keep attribution.
+    if v["notice_format"] == 2 && get("sender") == Some("Interlink") {
+        return format!(
+            "[Interlink inbox notice: {}]",
+            defang_attr(get("msg_id").unwrap_or(""))
+        );
+    }
     let sender = defang_attr(get("sender").unwrap_or("peer"));
     let mut attrs = String::new();
     for (k, label) in [
@@ -337,16 +331,17 @@ pub(super) fn render_inbox_line(line: &str) -> String {
     )
 }
 
-async fn push(
-    peer: &Peer<RoleServer>,
-    content: &str,
-    sender: &str,
-    msg_id: &str,
-    task_id: Option<&str>,
-    status: Option<&str>,
-    in_reply_to: Option<&str>,
-) -> Result<()> {
-    let meta = meta_map(sender, msg_id, task_id, status, in_reply_to);
+pub(super) fn render_notice(notice: &Notice) -> String {
+    render_inbox_line(
+        &json!({
+            "sender": "Interlink", "msg_id": notice.id,
+            "content": notice.text(), "notice_format": notice.format_version
+        })
+        .to_string(),
+    )
+}
+
+async fn push(peer: &Peer<RoleServer>, content: &str, meta: Map<String, Value>) -> Result<()> {
     let note = CustomNotification::new(
         "notifications/claude/channel",
         Some(json!({ "content": content, "meta": Value::Object(meta) })),
@@ -359,6 +354,35 @@ async fn push(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_notices_require_local_metadata_and_preserve_legacy_formats() {
+        let mut notice: Notice = serde_json::from_value(json!({
+            "id": "abcd1234", "state": "host_queued", "messages": []
+        }))
+        .unwrap();
+        let legacy = render_notice(&notice);
+        assert!(legacy.starts_with("[interlink message from Interlink]:\n"));
+        assert!(legacy.contains("Check the inbox before ending this turn."));
+        notice.format_version = 1;
+        assert_eq!(
+            render_notice(&notice),
+            concat!(
+                "[interlink message from Interlink]:\n",
+                "<interlink sender=\"Interlink\" msg_id=\"abcd1234\">\n",
+                "[Interlink inbox notice] New peer message. Call receive_messages(notification_id=\"abcd1234\").\n",
+                "</interlink>"
+            )
+        );
+        notice.format_version = 2;
+        assert_eq!(render_notice(&notice), "[Interlink inbox notice: abcd1234]");
+        let peer = json!({
+            "sender": "Interlink", "msg_id": "abcd1234", "content": notice.text()
+        });
+        assert!(
+            render_inbox_line(&peer.to_string()).starts_with("[interlink message from Interlink]:")
+        );
+    }
+
     #[test]
     fn render_inbox_line_defangs_spoofed_wrapper() {
         // A peer tries to inject a second, higher-authority attribution block.
