@@ -108,8 +108,11 @@ local message state. Every inbox notice requires calling `receive_messages` with
 its `notification_id` before ending the turn. After reading, call
 `acknowledge_messages` with the exact returned receipt objects before acting on
 the messages or fetching another full batch. An empty fetch ends notice handling.
-Do not poll after ordinary turns or while waiting: notices wake you. Purposeful
-manual reads and recovery remain available. Report missing tools or errors.
+Continue independent work while a peer works. When only waiting for a reply, end
+your turn so queued notices can run. Do not sleep, keep reasoning, or poll the
+inbox or message status to wait; notices wake you. Outbound status checks are for
+delivery troubleshooting and cannot show a peer reply. Purposeful manual reads
+and recovery remain available. Report missing tools or errors.
 Manual fetches and acknowledgement do not retire an outstanding host notice;
 pass its matching `notification_id` when handling it. If the host lost that notice,
 `receive_messages(reset_notification=true)` explicitly restores notifications for

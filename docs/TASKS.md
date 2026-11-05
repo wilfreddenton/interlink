@@ -59,6 +59,9 @@ The outbound log and ordinary outbox are in memory. The shared inbound mailbox,
 consumption, and progress supersession persist per identity/session. Neither is
 a persistent task scheduler. `bus_accepted` means relay acceptance, not that the
 peer read or completed the task. Receiver acknowledgement records explicit local consumption.
+Use outbound status checks for delivery troubleshooting, not to wait for a reply.
+Continue independent work if available; otherwise end the turn so the reply
+notice can run. Do not sleep or repeatedly check inbox/status to wait.
 
 All hosts call `receive_messages` on an inbox notice, then `acknowledge_messages`
 with the returned receipt objects after reading. `conversation_history` is

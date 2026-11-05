@@ -24,6 +24,8 @@ The local instructions below are for testing development changes.
 Version 0.13.1 reduces notices to `[Interlink inbox notice: ID]`, with guidance in
 MCP context. Update the MCP binary and operating skill together; session-only and
 peer-plus-session calls remain compatible.
+Version 0.13.2 tells waiting agents to end their turn so queued peer notices can
+run, and reserves outbound status checks for delivery troubleshooting.
 The broker protocol is unchanged.
 Version 0.11.0 removes title support; update the binary and plugin together
 and follow the [upgrade notes](../docs/SESSIONS.md#upgrading-from-session-titles).

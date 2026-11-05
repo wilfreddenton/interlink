@@ -51,11 +51,10 @@ The npm package supplies only `interlink-mcp`; the full release archive or
 in memory; separate files persist the shared inbound mailbox and consumption,
 pairing, Claude notification inbox, and failed-delivery recovery.
 
-Version 0.13.1 uses single-line wake notices and the same delivered-notice Stop
-recovery rule for both hosts. Session-only addressing remains supported. Update
-the MCP server and host integration
-together. See [session routing](../docs/SESSIONS.md#selecting-a-session) and the
-[changelog](../CHANGELOG.md#0131---2026-11-03). No broker update is required.
+Version 0.13.2 tells Claude and Codex to end their turn when only waiting for a
+peer, allowing queued reply notices to run. Outbound status checks are for delivery
+troubleshooting. Update the MCP server and Claude operating skill together. See
+the [changelog](../CHANGELOG.md#0132---2026-11-04). No broker update is required.
 
 ## Releasing
 
