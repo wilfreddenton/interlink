@@ -4,12 +4,12 @@ Run one bus somewhere all participating machines can reach. Each Claude Code or
 Codex CLI session runs its own local `interlink-mcp`; the agent is started by its
 host, not deployed as a shared daemon.
 
-Install Interlink 0.13.1 for compact notices and shared delivered-notice recovery:
-`cargo install interlink-mcp --version 0.13.1 --locked`. The npm/plugin path is
+Install Interlink 0.13.2 for explicit peer-waiting guidance:
+`cargo install interlink-mcp --version 0.13.2 --locked`. The npm/plugin path is
 documented separately in [the plugin guide](../plugin/README.md).
 
-The compact notices and recovery changes in 0.13.1 affect the per-session MCP
-server; the broker protocol is unchanged.
+The 0.13.2 guidance changes affect the per-session MCP server and Claude operating
+skill; the broker protocol is unchanged.
 There is no need to restart the broker or clear its roster for this upgrade.
 Existing MCP processes keep their loaded behavior until their host reconnects
 or restarts them; schedule that per session when its active work permits.

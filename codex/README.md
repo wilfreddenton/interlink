@@ -17,10 +17,10 @@ local shared daemon. The adapter uses `codex queue`; remote app servers and the
 desktop app are not covered by this adapter's validation. Ephemeral
 (`codex exec --ephemeral`) threads cannot accept queued submissions. Check `codex queue --help` before setup.
 
-Install Interlink 0.13.1 or newer:
+Install Interlink 0.13.2 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.13.1 --locked
+cargo install interlink-mcp --version 0.13.2 --locked
 ```
 
 Alternatively, use a release archive or run `cargo install --path . --locked`

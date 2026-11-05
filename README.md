@@ -14,10 +14,10 @@ private network.
 
 See [CHANGELOG.md](CHANGELOG.md) for the release details.
 
-Version **0.13.1** reduces wake notices to `[Interlink inbox notice: ID]` and
-prevents Codex Stop recovery from reading ahead of queued notices. Guidance stays
-in MCP context. Update the MCP server and host integration when active work permits;
-no broker update is needed. Session-only and legacy peer-plus-session calls remain supported.
+Version **0.13.2** clarifies how Claude and Codex should wait for peer replies:
+continue independent work, then end the turn so queued notices can run. Message
+status checks diagnose delivery; they do not wait for a reply. Update the MCP
+server and Claude operating skill when active work permits. No broker update is needed.
 
 ## The trust model
 
@@ -61,10 +61,10 @@ send; acceptance by one relay is enough to complete an outbound send.
 
 ### Binaries and first-time identity setup
 
-Install version 0.13.1 or newer:
+Install version 0.13.2 or newer:
 
 ```bash
-cargo install interlink-mcp --version 0.13.1 --locked
+cargo install interlink-mcp --version 0.13.2 --locked
 ```
 
 Or download a [release archive](https://github.com/wilfreddenton/interlink/releases).

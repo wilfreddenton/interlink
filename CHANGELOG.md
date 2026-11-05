@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-11-04
+
+- Clarify shared Claude/Codex guidance: continue independent work, then end the
+  turn when only waiting for a peer so queued reply notices can run. Do not
+  sleep, keep reasoning, or poll inbox/status as a substitute for yielding.
+- Describe outbound message status as delivery troubleshooting, not a way to
+  wait for peer replies. Delivery, acknowledgement, and broker behavior are unchanged.
+
 ## [0.13.1] - 2026-11-03
 
 - Align Codex Stop recovery with Claude: recover only after a notice reaches the

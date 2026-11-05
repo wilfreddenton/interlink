@@ -16,8 +16,12 @@ visible tool instructions or Interlink attribution wrapper. The full
 read/acknowledgement protocol is supplied through MCP server instructions,
 not repeated in each visible notice. Stored notices retain their format version
 so both previous notice formats queued before an upgrade still match the prompt
-hook. Do not poll after ordinary turns or while waiting; notices wake the agent.
-Purposeful manual reads, full-batch draining, and recovery remain available.
+hook. While a peer works, continue independent work if available. When only waiting
+for a reply, end the turn so queued notices can run. Do not sleep, keep reasoning,
+or poll the inbox or outbound status to wait. Interlink listens in the background
+and notices wake the agent. Outbound status is for delivery troubleshooting, not
+waiting for peer replies. Purposeful manual reads, full-batch draining, and
+recovery remain available.
 
 The host controls presentation. MCP instructions supply model context rather than
 another chat message, but are not a private or guaranteed invisible channel.
@@ -488,3 +492,13 @@ six-message bursts, bidirectional exchanges, and acknowledgement of every messag
 Each host made four inbox fetches with zero empty results. Neither started extra
 turns during the final 20-second quiet check, and no pending wake-ups remained.
 The standard live-test recipe above still uses an isolated test daemon.
+
+On 2026-11-04, an isolated real-model run checked the 0.13.2 waiting guidance
+with standalone Codex 0.166.0 and Claude Code 2.1.318. A temporary variant of the
+standalone fixture asked both models to wait for a controller message without
+explicitly instructing them to end the turn. Both yielded and resumed on the
+notice. With `message_status` available, neither called it to wait. Six-message
+bursts and bidirectional exchanges also passed, with every message acknowledged,
+four inbox fetches per host, zero empty fetches, and no extra turns during the
+20-second quiet check. This controlled run does not guarantee model behavior
+under every task prompt or in a long-running conversation.
